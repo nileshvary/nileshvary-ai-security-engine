@@ -6,7 +6,7 @@ Hands-on AI/LLM security research and defensive tooling.
 
 Senior Network Security Engineer (CCIE Security, PCNSE) with 9+ years 
 in enterprise security infrastructure. Currently expanding into AI/LLM 
-security — applying defense-in-depth and zero-trust principles to the 
+security, applying defense-in-depth and zero-trust principles to the 
 emerging AI attack surface.
 
 ## What's here
