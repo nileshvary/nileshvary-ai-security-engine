@@ -22,9 +22,11 @@ emerging AI attack surface.
 - Palo Alto Networks Certified Network Security Engineer (PCNSE)
 - AWS Certified Cloud Practitioner
 
-## Currently learning
+## AI Security Learning Portfolio
 
-- OWASP LLM Top 10
-- MITRE ATLAS framework
-- AI defense patterns (NeMo Guardrails, Lakera, Constitutional AI)
-- Hands-on prompt injection (PortSwigger labs, Lakera Gandalf)
+Hands-on research and defensive tooling for LLM/AI security.
+
+Expanding into AI/LLM security. Applying defense-in-depth and 
+zero-trust principles from network security to AI systems.
+
+More content coming as I work through hands-on labs and projects.
