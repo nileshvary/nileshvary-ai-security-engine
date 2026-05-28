@@ -12,7 +12,7 @@ license = { text = "Proprietary" }
 dependencies = []
 
 [project.optional-dependencies]
-dev = []
+dev = ["pytest>=8", "pytest-cov>=5"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
