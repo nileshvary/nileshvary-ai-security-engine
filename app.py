@@ -720,27 +720,17 @@ def render_sidebar() -> None:
                 _REQUEST_ACCESS_MAILTO,
                 use_container_width=True,
             )
-            login_col, logout_col = st.columns(2)
-            if login_col.button(
-                "🔓 Login",
+            # Public users have nothing to log out from — no logout
+            # button here. Logging in opens the access screen where they
+            # paste their token.
+            if st.button(
+                "🔑 Login with token",
                 use_container_width=True,
                 key="sidebar-login",
                 help="Sign in with a token for unlimited scanning.",
             ):
                 st.session_state.screen = "access"
                 st.rerun()
-            if logout_col.button(
-                "🚪 Logout",
-                use_container_width=True,
-                key="sidebar-logout-public",
-                help=(
-                    "Clear all session data (findings, AI key, voice "
-                    "settings) and return to the landing page. Your free "
-                    "scan quota is tracked by IP, not session — logging "
-                    "out does not reset it on Streamlit Cloud."
-                ),
-            ):
-                _do_logout()
 
         st.divider()
         st.caption("RemediAX v1.0.0")
