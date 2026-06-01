@@ -159,6 +159,51 @@ def _clear_screen_param() -> None:
         pass
 
 
+def _bootstrap_admin_token_from_secrets() -> None:
+    """Seed ``tokens.json`` with the ``APP_ADMIN_TOKEN`` secret.
+
+    Streamlit Cloud deploys start with an empty ``tokens.json`` (it is
+    gitignored) so the operator cannot log in unless they SSH in to run
+    ``generate_token.py`` — which Cloud doesn't allow. This helper
+    closes that gap: at app startup, if ``st.secrets["APP_ADMIN_TOKEN"]``
+    is set, register its hash as a permanent admin token. Idempotent —
+    safe to call on every rerun.
+
+    Silently no-ops when:
+    * Streamlit secrets are unavailable (local dev without
+      ``.streamlit/secrets.toml``).
+    * The secret is missing or empty.
+    * A record with the same hash is already in ``tokens.json`` (e.g.
+      the secret was already bootstrapped on a previous boot).
+    """
+    try:
+        token = st.secrets.get("APP_ADMIN_TOKEN")
+    except Exception as exc:
+        # ``st.secrets`` raises StreamlitSecretNotFoundError when no
+        # secrets file exists. Local dev hits this on every run.
+        logger.debug("Streamlit secrets unavailable: %s", exc)
+        return
+    if not token:
+        return
+    raw = str(token).strip()
+    if not raw:
+        return
+    try:
+        new_id = TokenManager().register_token_hash(
+            raw,
+            permanent=True,
+            for_person="Streamlit Cloud admin (bootstrapped from secret)",
+        )
+    except Exception as exc:
+        logger.warning("Failed to bootstrap admin token from secret: %s", exc)
+        return
+    if new_id is not None:
+        logger.info(
+            "Bootstrapped permanent admin token (id %s) from APP_ADMIN_TOKEN secret",
+            new_id,
+        )
+
+
 def _attempt_auto_login() -> None:
     """If a remember-me token sits in ``?t=``, revalidate and log in.
 
@@ -1089,11 +1134,17 @@ def main() -> None:
         initial_sidebar_state="collapsed",
     )
     st.markdown(_GLOBAL_CSS, unsafe_allow_html=True)
+
+    # First, ensure the admin token exists if the deploy provided it
+    # via st.secrets. This MUST run before any auth check so a fresh
+    # Streamlit Cloud instance has a usable admin login on first boot.
+    _bootstrap_admin_token_from_secrets()
+
     initialize_state()
 
-    # Best-effort auto-login from browser localStorage. No-ops when the
-    # user is already authenticated, no token is remembered, or we have
-    # already tried this session.
+    # Best-effort auto-login from the ``?t=`` URL parameter. No-ops
+    # when the user is already authenticated, no token is remembered,
+    # or we have already tried this session.
     _attempt_auto_login()
 
     if not st.session_state.authenticated and st.session_state.screen != "access":

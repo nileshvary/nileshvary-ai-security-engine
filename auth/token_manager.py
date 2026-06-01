@@ -74,6 +74,63 @@ class TokenManager:
         self._save(data)
         return raw
 
+    def register_token_hash(
+        self,
+        raw_token: str,
+        *,
+        duration_hours: int = 48,
+        for_person: str = "",
+        permanent: bool = False,
+    ) -> str | None:
+        """Register an existing raw token's hash without minting a new one.
+
+        Useful for bootstrapping a deploy-time admin token from a secret:
+        the operator pastes their permanent admin token into the
+        deployment's secret store, and this method registers its hash
+        on first boot — so the raw value never has to be committed to
+        version control. Idempotent: if a record with this hash already
+        exists, the store is left unchanged.
+
+        Args:
+            raw_token: The token whose hash should be stored. Caller is
+                responsible for sourcing it (e.g. from Streamlit secrets).
+            duration_hours: Validity period in hours; ignored when
+                ``permanent=True``.
+            for_person: Free-form note about who the token is for.
+            permanent: When True, the token never expires.
+
+        Returns:
+            The newly-created token id (first 12 chars of the SHA-256
+            hash) on success, or ``None`` if a record with that hash
+            was already present.
+        """
+        hashed = self._hash(raw_token)
+        data = self._load()
+        if any(
+            rec.get("hash") == hashed
+            for rec in data.get("tokens", {}).values()
+        ):
+            return None
+
+        expires = (
+            None
+            if permanent
+            else (datetime.utcnow() + timedelta(hours=duration_hours)).isoformat()
+        )
+        record = {
+            "hash": hashed,
+            "created": datetime.utcnow().isoformat(),
+            "expires": expires,
+            "permanent": permanent,
+            "for": for_person,
+            "uses": 0,
+            "revoked": False,
+        }
+        token_id = hashed[:12]
+        data.setdefault("tokens", {})[token_id] = record
+        self._save(data)
+        return token_id
+
     def validate_token(
         self,
         entered: str,

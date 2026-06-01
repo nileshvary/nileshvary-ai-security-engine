@@ -136,3 +136,51 @@ def test_revoke_unknown_token_returns_false(token_manager: TokenManager) -> None
 
 def test_delete_unknown_token_returns_false(token_manager: TokenManager) -> None:
     assert token_manager.delete_token("doesnotexist") is False
+
+
+def test_register_token_hash_validates_back(token_manager: TokenManager) -> None:
+    raw = "RMX-deploy-secret-12345"
+    token_id = token_manager.register_token_hash(
+        raw, permanent=True, for_person="bootstrap"
+    )
+    assert token_id is not None
+    assert len(token_id) == 12
+
+    ok, status, record = token_manager.validate_token(raw, ip="ip-bootstrap")
+    assert ok is True
+    assert status == "valid"
+    assert record["permanent"] is True
+    assert record["for"] == "bootstrap"
+
+
+def test_register_token_hash_is_idempotent(token_manager: TokenManager) -> None:
+    raw = "RMX-same-secret-7777"
+    first = token_manager.register_token_hash(raw, permanent=True)
+    second = token_manager.register_token_hash(raw, permanent=True)
+    assert first is not None
+    assert second is None
+    # Still only one record in the store.
+    all_tokens = token_manager.get_all_tokens()
+    assert len(all_tokens) == 1
+
+
+def test_register_token_hash_does_not_persist_raw_value(
+    token_manager: TokenManager, tmp_path: Path
+) -> None:
+    raw = "RMX-never-commit-this-please-1234567890"
+    token_manager.register_token_hash(raw, permanent=True)
+    contents = (tmp_path / "tokens.json").read_text(encoding="utf-8")
+    assert raw not in contents
+
+
+def test_register_token_hash_respects_expiry_for_non_permanent(
+    token_manager: TokenManager,
+) -> None:
+    raw = "RMX-time-limited-bootstrap"
+    token_id = token_manager.register_token_hash(
+        raw, permanent=False, duration_hours=24
+    )
+    assert token_id is not None
+    record = token_manager.get_all_tokens()[token_id]
+    assert record["permanent"] is False
+    assert record["expires"] is not None
