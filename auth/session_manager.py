@@ -10,7 +10,7 @@ from typing import Any
 
 
 _DEFAULTS: dict[str, Any] = {
-    "screen": "access",
+    "screen": "landing",
     "authenticated": False,
     "token_record": {},
     "findings": [],

@@ -11,6 +11,7 @@ CLI uses (``integration_bridge``, ``remediation_engine``, ``verifier``,
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import shutil
 import sys
@@ -448,6 +449,75 @@ def _client_id() -> str:
     return st.session_state.client_id
 
 
+# ---------------------------------------------------------------------------
+# Public access tier (no token required — 3 free scans / day per IP)
+# ---------------------------------------------------------------------------
+
+_REQUEST_ACCESS_MAILTO = (
+    "mailto:nileshvary@gmail.com"
+    "?subject=RemediAX%20Full%20Access%20Request"
+    "&body=Hi%2C%20I%27d%20like%20unlimited%20RemediAX%20access.%20Thanks!"
+)
+
+
+def _public_rate_key() -> str:
+    """Return a stable id for rate-limiting one public (unauthenticated) user.
+
+    Prefers the real client IP from ``X-Forwarded-For`` (Streamlit Cloud
+    sets this when the request goes through their proxy). Falls back to
+    a session-scoped UUID when running locally or behind a proxy that
+    strips the header. Both paths return a 16-char SHA-256 prefix so
+    the actual IP never appears in ``.remediax_usage.json``.
+    """
+    ip = ""
+    try:
+        headers = getattr(st.context, "headers", {}) or {}
+        forwarded = headers.get("X-Forwarded-For") or headers.get("x-forwarded-for") or ""
+        ip = forwarded.split(",")[0].strip() if forwarded else ""
+    except Exception:
+        ip = ""
+    if ip:
+        return "ip-" + hashlib.sha256(("rmx-public:" + ip).encode()).hexdigest()[:16]
+    if "public_session_key" not in st.session_state:
+        st.session_state.public_session_key = uuid.uuid4().hex[:16]
+    return "sess-" + st.session_state.public_session_key
+
+
+def _scans_remaining_today() -> int:
+    """Free scans the current public user has left today. Returns -1 for token users."""
+    if st.session_state.authenticated:
+        return -1
+    rl = RateLimiter()
+    return max(0, rl.daily_cap - rl.usage_today(_public_rate_key()))
+
+
+def _can_run_scan() -> bool:
+    """True when the user is allowed to run one more scan right now."""
+    if st.session_state.authenticated:
+        return True
+    return _scans_remaining_today() > 0
+
+
+def _consume_scan_quota() -> None:
+    """Increment the public-user scan counter. No-op for token users."""
+    if st.session_state.authenticated:
+        return
+    RateLimiter().check_and_increment(_public_rate_key(), has_api_key=False)
+
+
+def _render_quota_exceeded_message() -> None:
+    """Surface the upsell banner when a public user is at limit."""
+    st.warning(
+        "You have used your 3 free daily scans. "
+        "Request full access for unlimited scanning."
+    )
+    st.link_button(
+        "📧 Request Access",
+        _REQUEST_ACCESS_MAILTO,
+        use_container_width=False,
+    )
+
+
 def _ensure_output_dir() -> Path:
     if st.session_state.output_dir is not None:
         path = Path(st.session_state.output_dir)
@@ -590,30 +660,54 @@ def render_sidebar() -> None:
 
         st.divider()
         st.markdown("**Access**")
-        record = st.session_state.token_record or {}
-        token_id = record.get("hash", "?")[:8] if record else "—"
-        st.caption(f"Token id: `{token_id}`")
-        st.caption(_ts_label())
-        usage = RateLimiter().usage_today(record.get("hash", "anon")[:12])
-        st.caption(
-            f"Scans today: {usage}/3"
-            if not st.session_state.api_mode
-            else f"Scans today: {usage} (unlimited)"
-        )
+        if st.session_state.authenticated:
+            # Token user (registered) — unlimited scans, may be admin.
+            record = st.session_state.token_record or {}
+            token_id = record.get("hash", "?")[:8] if record else "—"
+            tier = "Admin" if is_admin() else "Token user"
+            st.caption(f"Tier: **{tier}**")
+            st.caption(f"Token id: `{token_id}`")
+            st.caption(_ts_label())
+            st.caption("Scans today: unlimited")
 
-        st.divider()
-        nav_admin, nav_logout = st.columns(2)
-        if is_admin():
-            if nav_admin.button("👤 Admin", use_container_width=True):
-                st.session_state.screen = "admin"
-                st.rerun()
+            st.divider()
+            if is_admin():
+                nav_admin, nav_logout = st.columns(2)
+                if nav_admin.button("👤 Admin", use_container_width=True):
+                    st.session_state.screen = "admin"
+                    st.rerun()
+                if nav_logout.button("🚪 Logout", use_container_width=True):
+                    _clear_remembered_token()
+                    _clear_screen_param()
+                    logout()
+                    st.rerun()
+            else:
+                if st.button("🚪 Logout", use_container_width=True):
+                    _clear_remembered_token()
+                    _clear_screen_param()
+                    logout()
+                    st.rerun()
         else:
-            nav_admin.caption("—")
-        if nav_logout.button("🚪 Logout", use_container_width=True):
-            _clear_remembered_token()
-            _clear_screen_param()
-            logout()
-            st.rerun()
+            # Public user (no token) — 3 free scans / day per IP.
+            remaining = _scans_remaining_today()
+            cap = RateLimiter().daily_cap
+            st.caption("Tier: **Public (free)**")
+            st.caption(f"Free scans remaining: **{remaining}/{cap}**")
+            if remaining == 0:
+                st.caption("⚠️ Daily limit reached")
+
+            st.link_button(
+                "📧 Request Full Access",
+                _REQUEST_ACCESS_MAILTO,
+                use_container_width=True,
+            )
+            if st.button(
+                "🔓 Login with token",
+                use_container_width=True,
+                key="sidebar-login",
+            ):
+                st.session_state.screen = "access"
+                st.rerun()
 
         st.divider()
         st.caption("RemediAX v1.0.0")
@@ -683,6 +777,15 @@ def render_access() -> None:
     cols[0].caption("⏱️ Tokens are time-limited (48h default)")
     cols[1].caption("🔒 All sessions encrypted via HTTPS")
     cols[2].caption("📧 [Request access](mailto:nileshvary@gmail.com)")
+
+    # The access screen is now opt-in. Anyone who reached it without a
+    # token (e.g. clicked the sidebar Login button by mistake) should be
+    # able to return to the public landing without authenticating.
+    st.divider()
+    back_col, _ = st.columns([1, 3])
+    if back_col.button("← Back to RemediAX", use_container_width=True):
+        st.session_state.screen = "landing"
+        st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -770,6 +873,22 @@ def render_landing() -> None:
         unsafe_allow_html=True,
     )
 
+    # Public users see their daily quota status here; token users get a
+    # subtler "unlimited" note.
+    at_limit = False
+    if not st.session_state.authenticated:
+        remaining = _scans_remaining_today()
+        if remaining == 0:
+            _render_quota_exceeded_message()
+            at_limit = True
+        else:
+            st.info(
+                f"🔓 Public access — {remaining} free scan(s) remaining today. "
+                "Request full access for unlimited scanning."
+            )
+    else:
+        st.caption("✅ Token user — unlimited scans.")
+
     up_col, demo_col = st.columns([3, 2])
     with up_col:
         st.markdown('<div class="rx-upload-frame">', unsafe_allow_html=True)
@@ -777,20 +896,34 @@ def render_landing() -> None:
             "garak hitlog",
             type=("jsonl", "json"),
             label_visibility="collapsed",
+            disabled=at_limit,
         )
         st.markdown("</div>", unsafe_allow_html=True)
         if uploaded is not None and st.button(
-            "▶ Process upload", use_container_width=True
+            "▶ Process upload",
+            use_container_width=True,
+            disabled=at_limit,
         ):
-            _ingest_uploaded(uploaded)
+            if not _can_run_scan():
+                _render_quota_exceeded_message()
+            else:
+                _consume_scan_quota()
+                _ingest_uploaded(uploaded)
 
     with demo_col:
         if st.button(
-            "▶ Run Live Exploit Demo", use_container_width=True, type="primary"
+            "▶ Run Live Exploit Demo",
+            use_container_width=True,
+            type="primary",
+            disabled=at_limit,
         ):
-            st.session_state.findings = load_demo_findings()
-            st.session_state.screen = "summary"
-            st.rerun()
+            if not _can_run_scan():
+                _render_quota_exceeded_message()
+            else:
+                _consume_scan_quota()
+                st.session_state.findings = load_demo_findings()
+                st.session_state.screen = "summary"
+                st.rerun()
         st.caption("Real attack patterns • All 10 LLM categories.")
 
     # ── SECURITY POSTURE BADGES ──────────────────────────────────────
@@ -1326,13 +1459,20 @@ def main() -> None:
     # or we have already tried this session.
     _attempt_auto_login()
 
-    if not st.session_state.authenticated and st.session_state.screen != "access":
-        st.session_state.screen = "access"
+    # Public users can reach everything except the admin panel; only the
+    # admin screen is gated. The access screen is opt-in via the sidebar
+    # "Login" button.
+    if not st.session_state.authenticated and st.session_state.screen == "admin":
+        st.session_state.screen = "landing"
 
+    # Mirror the current screen to the URL for refresh persistence — for
+    # everyone, not just authenticated users.
     if st.session_state.authenticated:
-        # Persist the active screen to the URL so refresh stays in place.
         _sync_url_screen()
-        render_sidebar()
+
+    # Sidebar is visible for every user. Content branches inside the
+    # renderer based on whether the user has a token.
+    render_sidebar()
 
     screen = st.session_state.screen
     if screen == "access":
