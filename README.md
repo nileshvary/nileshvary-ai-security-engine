@@ -1,5 +1,7 @@
 # AI Security Learning
 
+[![CI](https://github.com/nileshvary/nileshvary-ai-security-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/nileshvary/nileshvary-ai-security-engine/actions/workflows/ci.yml)
+
 Hands-on AI/LLM security research and defensive tooling.
 
 ## About me

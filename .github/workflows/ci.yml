@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Tests (Python 3.12)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # The dev extra installs pytest + pytest-cov; the editable install
+      # of "." also registers the engine packages on sys.path so the
+      # tests resolve `from integration_bridge import ...` etc.
+      - name: Install package (editable) + dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run test suite
+        run: pytest tests/ -v --tb=short

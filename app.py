@@ -321,6 +321,117 @@ h1, h2, h3, h4, h5 { color: var(--text-primary) !important; }
 }
 .metric-card .value { font-size: 1.7rem; font-weight: 700; }
 .metric-card .label { font-size: 0.8rem; color: var(--text-secondary); }
+
+/* === Landing redesign === */
+
+/* Cycling subtitle: four spans stacked at the same position,
+ * each animation-delayed so they appear sequentially over a 16s loop. */
+.rx-subtitle-cycle {
+  position: relative;
+  min-height: 1.6em;
+  margin: 6px 0 14px;
+  color: #00d4ff;
+  font-family: monospace;
+  font-size: 1rem;
+}
+.rx-subtitle-cycle span {
+  position: absolute;
+  left: 0; top: 0;
+  opacity: 0;
+  white-space: nowrap;
+  animation: rx-cycle 16s infinite;
+}
+.rx-subtitle-cycle span::before { content: "› "; color: #00ff88; }
+.rx-subtitle-cycle span:nth-child(1) { animation-delay: 0s; }
+.rx-subtitle-cycle span:nth-child(2) { animation-delay: 4s; }
+.rx-subtitle-cycle span:nth-child(3) { animation-delay: 8s; }
+.rx-subtitle-cycle span:nth-child(4) { animation-delay: 12s; }
+@keyframes rx-cycle {
+  0%, 1%   { opacity: 0; transform: translateY(4px); }
+  4%, 22%  { opacity: 1; transform: translateY(0); }
+  25%, 100% { opacity: 0; transform: translateY(-4px); }
+}
+
+.rx-stat-row {
+  display: flex; flex-wrap: wrap; gap: 12px;
+  margin: 14px 0 22px;
+}
+.rx-stat {
+  flex: 1 1 220px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 4px solid #00d4ff;
+  border-radius: 8px;
+  padding: 12px 16px;
+  color: #e6edf3;
+}
+.rx-stat .rx-stat-icon { font-size: 1.4rem; }
+.rx-stat .rx-stat-value { font-size: 1.2rem; font-weight: 700; color: #00d4ff; }
+.rx-stat .rx-stat-label { color: var(--text-secondary); font-size: 0.85rem; }
+
+.rx-threat-card {
+  background: var(--bg-card);
+  border: 1px solid #1e3a5f;
+  border-top: 3px solid #00d4ff;
+  border-radius: 8px;
+  padding: 18px 20px;
+  height: 100%;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.rx-threat-card:hover {
+  border-color: #00d4ff;
+  box-shadow: 0 0 12px rgba(0, 212, 255, 0.18);
+}
+.rx-threat-card .rx-threat-title {
+  font-family: monospace;
+  font-size: 0.85rem;
+  letter-spacing: 0.1em;
+  color: #00d4ff;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.rx-threat-card .rx-threat-body { color: #e6edf3; line-height: 1.55; font-size: 0.92rem; }
+
+.rx-section-header {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #00d4ff;
+  margin: 24px 0 4px;
+  font-family: monospace;
+  letter-spacing: 0.04em;
+}
+.rx-section-subtext {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  margin-bottom: 10px;
+}
+
+/* Dashed cyan border for the file uploader on landing only. */
+.rx-upload-frame [data-testid="stFileUploader"] section,
+.rx-upload-frame [data-testid="stFileUploaderDropzone"] {
+  border: 2px dashed #00d4ff !important;
+  background: rgba(0, 212, 255, 0.04) !important;
+  border-radius: 10px !important;
+}
+.rx-upload-frame [data-testid="stFileUploader"] section:hover,
+.rx-upload-frame [data-testid="stFileUploaderDropzone"]:hover {
+  background: rgba(0, 212, 255, 0.08) !important;
+}
+
+.rx-security-badges {
+  display: flex; flex-wrap: wrap; gap: 6px 14px;
+  align-items: center;
+  padding: 14px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 22px 0 10px;
+  font-family: monospace;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+.rx-security-badges .rx-sb { color: #e6edf3; }
+.rx-security-badges .rx-sb-sep { color: #1e3a5f; }
 </style>
 """
 
@@ -580,6 +691,7 @@ def render_access() -> None:
 
 
 def render_landing() -> None:
+    # ── HERO ──────────────────────────────────────────────────────────
     st.markdown(
         '<div class="remediax-hero"><h1>🛡️ REMEDIAX</h1>'
         '<div class="tagline">Detect • Remediate • Verify • Protect</div>'
@@ -588,49 +700,116 @@ def render_landing() -> None:
         unsafe_allow_html=True,
     )
 
-    left, right = st.columns(2)
-    with left:
-        st.markdown("### 📁 Upload Scan Results")
-        st.caption("Drag and drop a garak `hitlog.jsonl` or `report.jsonl`.")
+    # Animated subtitle cycle (pure CSS — no JS).
+    st.markdown(
+        '<div class="rx-subtitle-cycle">'
+        "<span>Scanning for prompt injection exploits&hellip;</span>"
+        "<span>Neutralizing jailbreak attack vectors&hellip;</span>"
+        "<span>Zero-trust remediation pipeline active&hellip;</span>"
+        "<span>Threat surface hardened. Human approved &check;</span>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    # Three stat badges row.
+    st.markdown(
+        '<div class="rx-stat-row">'
+        '<div class="rx-stat">'
+        '<div><span class="rx-stat-icon">☠️</span> '
+        '<span class="rx-stat-value">10</span></div>'
+        '<div class="rx-stat-label">Attack Classes Covered</div></div>'
+        '<div class="rx-stat">'
+        '<div><span class="rx-stat-icon">🛡️</span> '
+        '<span class="rx-stat-value">321</span></div>'
+        '<div class="rx-stat-label">Security Controls Verified</div></div>'
+        '<div class="rx-stat">'
+        '<div><span class="rx-stat-icon">⚡</span> '
+        '<span class="rx-stat-value">Real-time</span></div>'
+        '<div class="rx-stat-label">Threat Neutralization</div></div>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── THREE THREAT CARDS ───────────────────────────────────────────
+    c1, c2, c3 = st.columns(3)
+    c1.markdown(
+        '<div class="rx-threat-card">'
+        '<div class="rx-threat-title">☠️ EXPLOIT DETECTION</div>'
+        '<div class="rx-threat-body">'
+        "Surface prompt injection, jailbreaks, data exfiltration and "
+        "all OWASP LLM Top 10 attack vectors across your AI threat surface."
+        "</div></div>",
+        unsafe_allow_html=True,
+    )
+    c2.markdown(
+        '<div class="rx-threat-card">'
+        '<div class="rx-threat-title">🔧 ZERO-TRUST REMEDIATION</div>'
+        '<div class="rx-threat-body">'
+        "No patch auto-applies. Every remediation requires explicit "
+        "human approval &mdash; zero-trust security by design."
+        "</div></div>",
+        unsafe_allow_html=True,
+    )
+    c3.markdown(
+        '<div class="rx-threat-card">'
+        '<div class="rx-threat-title">🛡️ HARDENED DEPLOYMENT</div>'
+        '<div class="rx-threat-body">'
+        "Export battle-tested guardrail configs. Block known attack "
+        "patterns at the LLM gateway layer before they execute."
+        "</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── UPLOAD / DEMO ────────────────────────────────────────────────
+    st.markdown(
+        '<div class="rx-section-header">⚡ Initialize Threat Analysis</div>'
+        '<div class="rx-section-subtext">'
+        "Upload garak <code>hitlog.jsonl</code> to scan your AI attack "
+        "surface, or run our live exploit demonstration."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    up_col, demo_col = st.columns([3, 2])
+    with up_col:
+        st.markdown('<div class="rx-upload-frame">', unsafe_allow_html=True)
         uploaded = st.file_uploader(
-            "garak hitlog", type=("jsonl", "json"), label_visibility="collapsed"
+            "garak hitlog",
+            type=("jsonl", "json"),
+            label_visibility="collapsed",
         )
-        if uploaded is not None and st.button("▶ Process upload", use_container_width=True):
+        st.markdown("</div>", unsafe_allow_html=True)
+        if uploaded is not None and st.button(
+            "▶ Process upload", use_container_width=True
+        ):
             _ingest_uploaded(uploaded)
 
-    with right:
-        st.markdown("### ▶ Try Live Demo")
-        st.caption("10 findings across all OWASP LLM Top 10 categories.")
-        if st.button("▶ Load Full Demo", use_container_width=True):
+    with demo_col:
+        if st.button(
+            "▶ Run Live Exploit Demo", use_container_width=True, type="primary"
+        ):
             st.session_state.findings = load_demo_findings()
             st.session_state.screen = "summary"
             st.rerun()
         st.caption("Real attack patterns • All 10 LLM categories.")
 
-    # Status bar
-    cols = st.columns(3)
-    cols[0].caption(
-        "🔊 Voice: ON" if st.session_state.tts_enabled else "🔊 Voice: OFF"
-    )
-    cols[1].caption(
-        "🤖 AI: Enhanced" if st.session_state.api_mode else "🤖 AI: Basic"
-    )
-    cols[2].caption(_ts_label())
-
-    # OWASP coverage strip
-    chips = "".join(
-        f'<span class="owasp-chip" style="background:{OWASP_CONTENT[c]["color"]}">'
-        f"{c}</span>"
-        for c in [f"LLM{i:02d}" for i in range(1, 11)]
+    # ── SECURITY POSTURE BADGES ──────────────────────────────────────
+    badges = [
+        "🔒 Zero-Trust Auth",
+        "🔐 TLS Encrypted",
+        "👤 Human-in-the-Loop Control",
+        "☠️ Adversarial Input Hardening",
+        "🚫 No Data Persistence",
+        "♾️ CI/CD Verified",
+    ]
+    items = '<span class="rx-sb-sep">|</span>'.join(
+        f'<span class="rx-sb">{b}</span>' for b in badges
     )
     st.markdown(
-        f'<div class="owasp-strip">{chips}</div>'
-        '<div style="color:#8b949e;font-size:0.85rem;margin-top:2px;">'
-        "Full OWASP LLM Top 10 coverage.</div>",
+        f'<div class="rx-security-badges">{items}</div>',
         unsafe_allow_html=True,
     )
 
-    st.divider()
     st.caption(
         f"Built by Nileshwari Kadgale &middot; [GitHub]({_GITHUB_URL})"
     )
