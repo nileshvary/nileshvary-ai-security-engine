@@ -13,11 +13,21 @@ from __future__ import annotations
 
 import logging
 import shutil
+import sys
 import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+# Streamlit Community Cloud does not support editable installs ("-e .")
+# in requirements.txt, so the engine packages under src/ are NOT on
+# sys.path when the app boots there. Prepend it explicitly so imports
+# like ``from integration_bridge import ...`` resolve. Harmless locally
+# because the dev venv already has the package installed editably.
+_SRC_DIR = Path(__file__).parent / "src"
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
 
 import streamlit as st
 
