@@ -518,6 +518,23 @@ def _render_quota_exceeded_message() -> None:
     )
 
 
+def _do_logout() -> None:
+    """Shared logout handler for every tier — public, token, admin.
+
+    * Always clears ``?t=`` and ``?p=`` from the URL (no-op for public
+      users since neither is set).
+    * Always calls ``logout()`` which wipes ``st.session_state`` and
+      re-initializes with defaults. ``initialize_state`` now sets
+      ``screen="landing"`` so the user lands on the public landing page
+      rather than the access screen.
+    * Always triggers a rerun so the redirect takes effect immediately.
+    """
+    _clear_remembered_token()
+    _clear_screen_param()
+    logout()
+    st.rerun()
+
+
 def _ensure_output_dir() -> Path:
     if st.session_state.output_dir is not None:
         path = Path(st.session_state.output_dir)
@@ -676,17 +693,19 @@ def render_sidebar() -> None:
                 if nav_admin.button("👤 Admin", use_container_width=True):
                     st.session_state.screen = "admin"
                     st.rerun()
-                if nav_logout.button("🚪 Logout", use_container_width=True):
-                    _clear_remembered_token()
-                    _clear_screen_param()
-                    logout()
-                    st.rerun()
+                if nav_logout.button(
+                    "🚪 Logout",
+                    use_container_width=True,
+                    key="sidebar-logout-admin",
+                ):
+                    _do_logout()
             else:
-                if st.button("🚪 Logout", use_container_width=True):
-                    _clear_remembered_token()
-                    _clear_screen_param()
-                    logout()
-                    st.rerun()
+                if st.button(
+                    "🚪 Logout",
+                    use_container_width=True,
+                    key="sidebar-logout-token",
+                ):
+                    _do_logout()
         else:
             # Public user (no token) — 3 free scans / day per IP.
             remaining = _scans_remaining_today()
@@ -701,13 +720,27 @@ def render_sidebar() -> None:
                 _REQUEST_ACCESS_MAILTO,
                 use_container_width=True,
             )
-            if st.button(
-                "🔓 Login with token",
+            login_col, logout_col = st.columns(2)
+            if login_col.button(
+                "🔓 Login",
                 use_container_width=True,
                 key="sidebar-login",
+                help="Sign in with a token for unlimited scanning.",
             ):
                 st.session_state.screen = "access"
                 st.rerun()
+            if logout_col.button(
+                "🚪 Logout",
+                use_container_width=True,
+                key="sidebar-logout-public",
+                help=(
+                    "Clear all session data (findings, AI key, voice "
+                    "settings) and return to the landing page. Your free "
+                    "scan quota is tracked by IP, not session — logging "
+                    "out does not reset it on Streamlit Cloud."
+                ),
+            ):
+                _do_logout()
 
         st.divider()
         st.caption("RemediAX v1.0.0")
