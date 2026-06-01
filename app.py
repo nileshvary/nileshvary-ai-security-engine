@@ -231,6 +231,9 @@ def _attempt_auto_login() -> None:
         st.session_state.authenticated = True
         st.session_state.token_record = record
         st.session_state.is_admin = bool(record.get("permanent"))
+        # Authenticated wins over guest — clear the guest flag so the
+        # tier check is unambiguous.
+        st.session_state.guest_mode = False
         # Honor a ?p= screen marker so refresh on any page lands the user
         # back on that page. Admin screen requires a permanent token.
         desired = _read_query_screen()
@@ -707,7 +710,8 @@ def render_sidebar() -> None:
                 ):
                     _do_logout()
         else:
-            # Public user (no token) — 3 free scans / day per IP.
+            # Guest user — opted in from the access screen for 3 free
+            # scans / day per IP.
             remaining = _scans_remaining_today()
             cap = RateLimiter().daily_cap
             st.caption("Tier: **Public (free)**")
@@ -720,17 +724,17 @@ def render_sidebar() -> None:
                 _REQUEST_ACCESS_MAILTO,
                 use_container_width=True,
             )
-            # Public users have nothing to log out from — no logout
-            # button here. Logging in opens the access screen where they
-            # paste their token.
             if st.button(
-                "🔑 Login with token",
+                "🚪 Exit Guest",
                 use_container_width=True,
-                key="sidebar-login",
-                help="Sign in with a token for unlimited scanning.",
+                key="sidebar-exit-guest",
+                help=(
+                    "Clear all session data and return to the login "
+                    "screen. From there you can paste a token or "
+                    "continue as guest again."
+                ),
             ):
-                st.session_state.screen = "access"
-                st.rerun()
+                _do_logout()
 
         st.divider()
         st.caption("RemediAX v1.0.0")
@@ -775,6 +779,8 @@ def render_access() -> None:
                 st.session_state.authenticated = True
                 st.session_state.token_record = record
                 st.session_state.is_admin = bool(record.get("permanent"))
+                # Authenticated wins over guest — clear the guest flag.
+                st.session_state.guest_mode = False
                 st.session_state.screen = "landing"
                 if remember_me:
                     _persist_token(token_input.strip())
@@ -795,20 +801,34 @@ def render_access() -> None:
                 st.error(f"❌ Invalid token. {remaining} attempts remaining.")
             else:
                 st.error(f"❌ {status}")
+    # ── Guest fallback ───────────────────────────────────────────────
+    # Anyone without a token can still try the tool — 3 free scans / day.
+    left, mid, right = st.columns([1, 2, 1])
+    with mid:
+        st.markdown(
+            '<div style="text-align:center;margin:18px 0 8px;'
+            'color:#8b949e;font-family:monospace;letter-spacing:0.08em;">'
+            "──────── or ────────</div>",
+            unsafe_allow_html=True,
+        )
+        if st.button(
+            "👤 Continue as Guest — 3 free scans/day",
+            use_container_width=True,
+            key="access-guest",
+        ):
+            st.session_state.guest_mode = True
+            st.session_state.screen = "landing"
+            st.rerun()
+        st.caption(
+            "No account needed &middot; Upload your own `hitlog.jsonl` "
+            "&middot; Rate limited by IP"
+        )
+
     st.divider()
     cols = st.columns(3)
     cols[0].caption("⏱️ Tokens are time-limited (48h default)")
     cols[1].caption("🔒 All sessions encrypted via HTTPS")
     cols[2].caption("📧 [Request access](mailto:nileshvary@gmail.com)")
-
-    # The access screen is now opt-in. Anyone who reached it without a
-    # token (e.g. clicked the sidebar Login button by mistake) should be
-    # able to return to the public landing without authenticating.
-    st.divider()
-    back_col, _ = st.columns([1, 3])
-    if back_col.button("← Back to RemediAX", use_container_width=True):
-        st.session_state.screen = "landing"
-        st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -1482,20 +1502,25 @@ def main() -> None:
     # or we have already tried this session.
     _attempt_auto_login()
 
-    # Public users can reach everything except the admin panel; only the
-    # admin screen is gated. The access screen is opt-in via the sidebar
-    # "Login" button.
-    if not st.session_state.authenticated and st.session_state.screen == "admin":
+    # Three tiers can use the app: authenticated token users, admins,
+    # and explicit guests. Everyone else (fresh visitor) is forced onto
+    # the access screen until they pick one path.
+    can_use_app = st.session_state.authenticated or st.session_state.guest_mode
+    if not can_use_app:
+        st.session_state.screen = "access"
+    elif not st.session_state.authenticated and st.session_state.screen == "admin":
+        # Guests cannot reach the admin panel.
         st.session_state.screen = "landing"
 
-    # Mirror the current screen to the URL for refresh persistence — for
-    # everyone, not just authenticated users.
+    # URL screen-persistence is for authenticated users only — guest
+    # sessions are intentionally ephemeral and reset on refresh.
     if st.session_state.authenticated:
         _sync_url_screen()
 
-    # Sidebar is visible for every user. Content branches inside the
-    # renderer based on whether the user has a token.
-    render_sidebar()
+    # Sidebar renders only after the user has chosen a tier. On the
+    # access screen the sidebar would be empty and confusing.
+    if can_use_app:
+        render_sidebar()
 
     screen = st.session_state.screen
     if screen == "access":
