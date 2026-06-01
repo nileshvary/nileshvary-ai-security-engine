@@ -24,7 +24,11 @@ from verifier.models import VerificationResult
 
 from components.ai_client import RemediAXAI
 from components.owasp_content import get as owasp_get
-from components.owasp_content import is_escalation
+from components.owasp_content import (
+    get_tool_url,
+    is_escalation,
+    split_tool_entry,
+)
 
 
 _STRATEGY_COLORS: dict[str, str] = {
@@ -422,4 +426,142 @@ def render_finding(
     else:
         render_active_finding(
             finding, remediation_result, verification_result, ai_client
+        )
+
+
+# ---------------------------------------------------------------------------
+# "View" panel renderers (triggered by the third action button in the review
+# screen). Both deliberately render clean structured content rather than the
+# raw JSON dump that lived here previously.
+# ---------------------------------------------------------------------------
+
+
+def _tool_card(name: str, description: str, url: str | None) -> str:
+    """Render one tool as a card with name, description, and (optional) link."""
+    safe_name = html.escape(name, quote=True)
+    safe_desc = html.escape(description, quote=True) if description else ""
+    link_html = ""
+    if url:
+        safe_url = html.escape(url, quote=True)
+        link_html = (
+            f'<div style="margin-top:8px;">'
+            f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer" '
+            f'style="color:#00d4ff;text-decoration:none;'
+            f'border:1px solid #00d4ff;border-radius:4px;'
+            f'padding:3px 10px;font-size:0.8rem;">🔗 Visit website</a>'
+            f"</div>"
+        )
+    desc_html = (
+        f'<div style="color:#8b949e;margin-top:4px;font-size:0.9rem;">{safe_desc}</div>'
+        if safe_desc
+        else ""
+    )
+    return (
+        f'<div style="background:#161b22;border:1px solid #1e3a5f;'
+        f'border-radius:8px;padding:14px 16px;margin:8px 0;">'
+        f'<div style="color:#e6edf3;font-weight:600;font-size:1rem;">🔧 {safe_name}</div>'
+        f"{desc_html}{link_html}"
+        "</div>"
+    )
+
+
+def render_tools_panel(
+    finding: Finding,
+    remediation_result: RemediationResult,
+) -> None:
+    """Render the escalation "View tools" panel.
+
+    Shows one card per recommended external tool (with optional clickable
+    link) followed by the engine notes attached to the finding. Does NOT
+    show the raw finding payload — that lives in the Raw Data expander
+    at the bottom of the review screen.
+    """
+    import streamlit as st
+
+    content = owasp_get(finding.owasp_llm_category)
+    tools = content.get("external_tools") or []
+
+    st.markdown(
+        '<div style="background:#0d1117;border:1px solid #00d4ff;'
+        'border-radius:8px;padding:18px 20px;margin:14px 0;'
+        'box-shadow:0 0 15px rgba(0,212,255,0.2);">'
+        '<div style="color:#00d4ff;font-size:0.8rem;letter-spacing:0.08em;'
+        'text-transform:uppercase;margin-bottom:10px;">'
+        "🔗 Recommended external tools</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    if not tools:
+        st.info("No external tool recommendations were recorded for this finding.")
+    else:
+        cards_html = "".join(
+            _tool_card(*split_tool_entry(entry), get_tool_url(split_tool_entry(entry)[0]))
+            for entry in tools
+        )
+        st.markdown(cards_html, unsafe_allow_html=True)
+
+    notes = remediation_result.notes or []
+    if notes:
+        st.markdown(
+            '<div style="color:#8b949e;font-size:0.8rem;letter-spacing:0.08em;'
+            'text-transform:uppercase;margin:18px 0 6px;">📝 Engine notes</div>',
+            unsafe_allow_html=True,
+        )
+        notes_html = "".join(
+            f'<div style="background:#0d1117;border-left:3px solid #ffaa00;'
+            f'padding:8px 12px;margin:6px 0;color:#e6edf3;font-size:0.9rem;">'
+            f"{html.escape(note, quote=True)}</div>"
+            for note in notes
+        )
+        st.markdown(notes_html, unsafe_allow_html=True)
+
+
+def render_patch_panel(remediation_result: RemediationResult) -> None:
+    """Render the active-finding "View patch" panel.
+
+    Shows the full patched prompt and, when present, the guardrail YAML
+    preview. Does NOT show the raw finding payload.
+    """
+    import streamlit as st
+
+    patch = remediation_result.prompt_patch
+    if patch is not None:
+        st.markdown(
+            '<div style="color:#00d4ff;font-size:0.8rem;letter-spacing:0.08em;'
+            'text-transform:uppercase;margin:14px 0 6px;">🛡️ Patched system prompt</div>',
+            unsafe_allow_html=True,
+        )
+        st.code(patch.patched_prompt, language="text")
+
+    san = remediation_result.response_sanitization
+    if san is not None and (san.detected_issues or san.actions_taken):
+        st.markdown(
+            '<div style="color:#00ff88;font-size:0.8rem;letter-spacing:0.08em;'
+            'text-transform:uppercase;margin:14px 0 6px;">🧹 Sanitization details</div>',
+            unsafe_allow_html=True,
+        )
+        if san.original_response != san.sanitized_response:
+            st.markdown("**Before:**")
+            st.code(san.original_response, language="text")
+            st.markdown("**After:**")
+            st.code(san.sanitized_response, language="text")
+
+    config = remediation_result.guardrail_config
+    if config is not None and config.yaml_export:
+        st.markdown(
+            '<div style="color:#0080ff;font-size:0.8rem;letter-spacing:0.08em;'
+            'text-transform:uppercase;margin:14px 0 6px;">⚡ Guardrail config</div>',
+            unsafe_allow_html=True,
+        )
+        # Cap at ~1200 chars so a verbose YAML doesn't overrun the page.
+        snippet = config.yaml_export[:1200]
+        if len(config.yaml_export) > 1200:
+            snippet += "\n# ... (truncated; see Raw Data expander for full export)"
+        st.code(snippet, language="yaml")
+
+    if patch is None and san is None and (config is None or not config.yaml_export):
+        st.info(
+            "No additional remediation artifact to display. See Raw Data "
+            "below for the underlying finding payload."
         )

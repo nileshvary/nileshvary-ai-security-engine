@@ -31,7 +31,11 @@ from auth.session_manager import (
 )
 from auth.token_manager import TokenManager
 from components.ai_client import RemediAXAI
-from components.finding_card import render_finding
+from components.finding_card import (
+    render_finding,
+    render_patch_panel,
+    render_tools_panel,
+)
 from components.owasp_content import (
     ACTIVE_CATEGORIES,
     ESCALATION_CATEGORIES,
@@ -823,10 +827,20 @@ def render_review() -> None:
         _skip_current_finding()
         st.rerun()
     if btn_c.button(view_label, use_container_width=True):
-        with st.expander("Raw finding payload", expanded=True):
-            st.json(finding.raw_data)
-            if rem_result.guardrail_config is not None:
-                st.code(rem_result.guardrail_config.yaml_export[:800], language="yaml")
+        if is_esc:
+            render_tools_panel(finding, rem_result)
+        else:
+            render_patch_panel(rem_result)
+
+    # Raw data lives in a collapsed expander at the bottom of the page,
+    # always present so users can inspect the underlying payload without
+    # the View button hijacking the action area.
+    with st.expander("📦 Raw data", expanded=False):
+        st.caption(
+            "Underlying garak record for this finding. Useful for debugging "
+            "the pipeline; not normally needed for triage."
+        )
+        st.json(finding.raw_data)
 
     if st.session_state.tts_enabled:
         speech = (

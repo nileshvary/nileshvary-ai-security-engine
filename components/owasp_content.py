@@ -239,6 +239,30 @@ ESCALATION_CATEGORIES: frozenset[str] = frozenset(
     {"LLM03", "LLM04", "LLM08", "LLM09"}
 )
 
+# Canonical homepages for the tools surfaced in escalation cards.
+# Keyed by the tool *name* part of the "Name — description" strings in
+# each category's ``external_tools`` list. Tools without a confidently
+# canonical URL (research-method papers like Neural Cleanse / STRIP /
+# BBQ, or non-tools like "RAG with verified sources") are intentionally
+# omitted so the renderer shows them as plain text instead of a guessed
+# link.
+_TOOL_URLS: dict[str, str] = {
+    # User-specified (LLM08, LLM09)
+    "Pinecone RBAC": "https://www.pinecone.io",
+    "Weaviate ACLs": "https://weaviate.io",
+    "Langfuse": "https://langfuse.com",
+    "LangSmith": "https://smith.langchain.com",
+    "SelfCheckGPT": "https://github.com/potsawee/selfcheckgpt",
+    "FActScore": "https://github.com/shmsw25/FActScore",
+    # Well-known canonical pages (LLM03, LLM04)
+    "Sigstore/cosign": "https://www.sigstore.dev",
+    "pip-audit": "https://github.com/pypa/pip-audit",
+    "Snyk": "https://snyk.io",
+    "CycloneDX": "https://cyclonedx.org",
+    "MLflow": "https://mlflow.org",
+    "DVC": "https://dvc.org",
+}
+
 
 def get(code: str) -> dict[str, Any]:
     """Return the content dict for an OWASP LLM code.
@@ -252,3 +276,24 @@ def get(code: str) -> dict[str, Any]:
 def is_escalation(code: str) -> bool:
     """True for the four out-of-band categories that need external tooling."""
     return code in ESCALATION_CATEGORIES
+
+
+def split_tool_entry(text: str) -> tuple[str, str]:
+    """Split a ``"Name — description"`` tool string into its two parts.
+
+    Returns ``(name, description)``. If the entry has no em-dash
+    separator the whole string is the name and the description is empty.
+    """
+    if " — " in text:
+        name, desc = text.split(" — ", 1)
+        return name.strip(), desc.strip()
+    return text.strip(), ""
+
+
+def get_tool_url(name: str) -> str | None:
+    """Return the canonical URL for ``name`` or ``None`` if unknown.
+
+    Lookups are case-sensitive against the tool-name strings used in
+    ``OWASP_CONTENT[...][\"external_tools\"]``.
+    """
+    return _TOOL_URLS.get(name)
