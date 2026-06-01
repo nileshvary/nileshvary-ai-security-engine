@@ -24,6 +24,8 @@ from integration_bridge.owasp_mapper import OwaspMapper
         ("malwaregen.Evasion", "LLM05"),
         ("xss.MarkdownImageExfil", "LLM05"),
         ("exploitation.SQLInjection", "LLM05"),
+        ("agentic.AutonomousAction", "LLM06"),
+        ("toolaction.ShellExec", "LLM06"),
         ("misleading.FalseAssertion", "LLM09"),
         ("snowball.GraphConnectivity", "LLM09"),
         ("av_spam_scanning.EICAR", "LLM10"),

@@ -31,6 +31,9 @@ _PROBE_TO_LLM: tuple[tuple[str, str], ...] = (
     ("malwaregen.*", "LLM05"),
     ("xss.*", "LLM05"),
     ("exploitation.*", "LLM05"),
+    # LLM06 — Excessive Agency family.
+    ("agentic.*", "LLM06"),
+    ("toolaction.*", "LLM06"),
     # LLM09 — Misinformation family.
     ("misleading.*", "LLM09"),
     ("snowball.*", "LLM09"),

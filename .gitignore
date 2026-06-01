@@ -242,3 +242,9 @@ artifacts/*
 # Secrets / env files (allowlist example template)
 .env.*
 !.env.example
+
+# RemediAX webapp runtime
+tokens.json
+.remediax_usage.json
+.streamlit/secrets.toml
+_remediax_runs/
