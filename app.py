@@ -633,6 +633,222 @@ h1, h2, h3, h4, h5 { color: var(--text-primary) !important; }
 }
 .rx-security-strip .rx-sb { color: #e6edf3; }
 .rx-security-strip .rx-sb-sep { color: #1e3a5f; }
+
+/* === Access screen v3 (premium enterprise) === */
+
+/* Section 1 — Full-width scrolling marquee threat ticker */
+.rx-marquee {
+  width: 100%;
+  overflow: hidden;
+  background: linear-gradient(90deg, #3a0000, #5a0000, #3a0000);
+  border-top: 1px solid #ff4444;
+  border-bottom: 1px solid #ff4444;
+  padding: 9px 0;
+  margin: -8px 0 18px;
+  box-shadow: 0 0 18px rgba(255, 68, 68, 0.18) inset;
+}
+.rx-marquee-track {
+  display: flex;
+  width: max-content;
+  animation: rx-marquee-scroll 38s linear infinite;
+}
+.rx-marquee-segment {
+  font-family: monospace;
+  color: #ffd0d0;
+  white-space: nowrap;
+  padding-right: 60px;
+  font-size: 0.9rem;
+  letter-spacing: 0.02em;
+}
+@keyframes rx-marquee-scroll {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+/* Architecture diagram boxes */
+.rx-arch-box {
+  background: #111827;
+  border: 2px solid;
+  border-radius: 10px;
+  padding: 16px 18px;
+  text-align: center;
+  transition: box-shadow 0.2s;
+}
+.rx-arch-box:hover {
+  box-shadow: 0 0 14px rgba(255, 255, 255, 0.06);
+}
+.rx-arch-box-red {
+  border-color: #8b0000;
+  background: linear-gradient(180deg, #111827, #1a0a0a);
+}
+.rx-arch-box-cyan {
+  border-color: #00d4ff;
+  background: linear-gradient(180deg, #0d1117, #0a1620);
+  animation: rx-arch-pulse 2.4s infinite;
+}
+.rx-arch-box-green {
+  border-color: #00ff88;
+  background: linear-gradient(180deg, #111827, #0a1a13);
+}
+@keyframes rx-arch-pulse {
+  0%, 100% { box-shadow: 0 0 12px rgba(0, 212, 255, 0.22); }
+  50%      { box-shadow: 0 0 30px rgba(0, 212, 255, 0.55); }
+}
+.rx-arch-title {
+  font-family: monospace;
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: 0.06em;
+}
+.rx-arch-box-red   .rx-arch-title { color: #ff4444; }
+.rx-arch-box-cyan  .rx-arch-title { color: #00d4ff; }
+.rx-arch-box-green .rx-arch-title { color: #00ff88; }
+.rx-arch-desc {
+  color: #e6edf3;
+  font-size: 0.82rem;
+  margin-top: 4px;
+  line-height: 1.4;
+}
+.rx-arch-sub {
+  color: #8b949e;
+  font-size: 0.75rem;
+  margin-top: 2px;
+}
+
+/* Animated flowing dots between architecture boxes */
+.rx-arch-flow {
+  position: relative;
+  height: 36px;
+  margin: 0 auto;
+  width: 6px;
+}
+.rx-arch-dot {
+  position: absolute;
+  left: 0;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #00d4ff;
+  box-shadow: 0 0 8px #00d4ff;
+  animation: rx-flow-down 1.6s linear infinite;
+}
+.rx-arch-dot:nth-child(1) { animation-delay: 0s; }
+.rx-arch-dot:nth-child(2) { animation-delay: 0.55s; }
+.rx-arch-dot:nth-child(3) { animation-delay: 1.1s; }
+@keyframes rx-flow-down {
+  0%   { top: -6px; opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { top: 100%; opacity: 0; }
+}
+
+/* Stats row (4 badges) */
+.rx-stat-badges {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+  margin: 22px 0 10px;
+}
+.rx-stat-badge {
+  background: #111827;
+  border: 1px solid #1e3a5f;
+  border-left: 3px solid #00d4ff;
+  border-radius: 6px;
+  padding: 10px 12px;
+  transition: box-shadow 0.2s, border-color 0.2s;
+}
+.rx-stat-badge:hover {
+  border-color: #00d4ff;
+  box-shadow: 0 0 12px rgba(0, 212, 255, 0.18);
+}
+.rx-stat-badge-v {
+  color: #00d4ff;
+  font-family: monospace;
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+.rx-stat-badge-l {
+  color: #8b949e;
+  font-size: 0.78rem;
+  margin-top: 2px;
+}
+
+/* Horizontal "How It Works" — 5 steps with arrows */
+.rx-howit-row {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin: 14px 0 10px;
+}
+.rx-howit-step {
+  flex: 1 1 95px;
+  background: #111827;
+  border: 1px solid #1e3a5f;
+  border-radius: 6px;
+  padding: 10px 8px;
+  text-align: center;
+  transition: box-shadow 0.2s, border-color 0.2s;
+}
+.rx-howit-step:hover {
+  border-color: #00d4ff;
+  box-shadow: 0 0 10px rgba(0, 212, 255, 0.18);
+}
+.rx-howit-num {
+  font-size: 1.4rem;
+  line-height: 1;
+}
+.rx-howit-title {
+  color: #00d4ff;
+  font-family: monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  margin-top: 4px;
+}
+.rx-howit-desc {
+  color: #8b949e;
+  font-size: 0.7rem;
+  margin-top: 2px;
+  line-height: 1.3;
+}
+.rx-howit-arrow {
+  display: flex; align-items: center;
+  color: #00d4ff;
+  font-family: monospace;
+  font-size: 1.1rem;
+  padding: 0 4px;
+}
+
+/* 2x2 security concepts grid */
+.rx-concepts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 18px;
+}
+@media (max-width: 760px) {
+  .rx-concepts-grid { grid-template-columns: 1fr; }
+}
+
+/* Bottom badges bar */
+.rx-bottom-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  justify-content: center;
+  align-items: center;
+  padding: 14px 20px;
+  background: #0d1117;
+  border: 1px solid #1e3a5f;
+  border-radius: 8px;
+  margin: 24px 0 4px;
+  font-family: monospace;
+  font-size: 0.78rem;
+  color: #8b949e;
+}
+.rx-bottom-bar .rx-bb-item { color: #e6edf3; }
+.rx-bottom-bar .rx-bb-sep { color: #1e3a5f; }
+.rx-bottom-bar .rx-bb-author { color: #00d4ff; }
 </style>
 """
 
@@ -944,94 +1160,138 @@ def render_sidebar() -> None:
 
 
 def render_access() -> None:
-    # ── Stats bar at the top (4 columns) ─────────────────────────────
+    # ── SECTION 1 — Full-width scrolling threat ticker ──────────────
+    ticker_text = (
+        "⚡ LIVE THREAT FEED "
+        "&mdash; 🔴 Prompt Injection detected &rarr; Neutralized ✅ "
+        "&mdash; 🔴 Jailbreak attempt blocked &rarr; Patched ✅ "
+        "&mdash; 🔴 Data exfiltration attempt &rarr; Remediated ✅ "
+        "&mdash; 🔴 Supply chain compromise &rarr; Escalated ⚠️ "
+        "&mdash; 🔴 Sensitive data leak &rarr; Redacted ✅"
+    )
     st.markdown(
-        '<div class="rx-access-stats">'
-        '<div><div class="rx-access-stat-v">10</div>'
-        '<div class="rx-access-stat-l">OWASP LLM Categories</div></div>'
-        '<div><div class="rx-access-stat-v">321</div>'
-        '<div class="rx-access-stat-l">Tests Passing</div></div>'
-        '<div><div class="rx-access-stat-v">Real-time</div>'
-        '<div class="rx-access-stat-l">Analysis</div></div>'
-        '<div><div class="rx-access-stat-v">Human-in-the-Loop</div>'
-        '<div class="rx-access-stat-l">Zero-trust by design</div></div>'
-        "</div>",
+        '<div class="rx-marquee"><div class="rx-marquee-track">'
+        f'<div class="rx-marquee-segment">{ticker_text}</div>'
+        f'<div class="rx-marquee-segment">{ticker_text}</div>'
+        "</div></div>",
         unsafe_allow_html=True,
     )
 
-    left_col, right_col = st.columns([3, 2], gap="large")
+    # ── SECTION 2 — Two columns (55 / 45) ───────────────────────────
+    left_col, right_col = st.columns([55, 45], gap="large")
 
-    # ── LEFT (60%): educational content ──────────────────────────────
+    # ── LEFT (55%): architecture diagram + stats + steps + concepts ─
     with left_col:
-        # Live threat ticker
+        # Part A — Architecture diagram with three connected boxes
         st.markdown(
-            '<div class="rx-ticker">'
-            '<div class="rx-ticker-dot"></div>'
-            '<div class="rx-ticker-msgs">'
-            '<div class="rx-ticker-msg">🔴 Prompt Injection detected &rarr; Neutralized ✅</div>'
-            '<div class="rx-ticker-msg">🔴 Jailbreak attempt blocked &rarr; Patched ✅</div>'
-            '<div class="rx-ticker-msg">🔴 Data exfiltration attempt &rarr; Remediated ✅</div>'
-            '<div class="rx-ticker-msg">🔴 Supply chain compromise &rarr; Escalated ⚠️</div>'
-            '<div class="rx-ticker-msg">🔴 Sensitive data leak &rarr; Redacted ✅</div>'
-            "</div></div>",
+            '<div class="rx-section-eyebrow">🏗️ ARCHITECTURE</div>'
+            '<div class="rx-arch-box rx-arch-box-red">'
+            '<div class="rx-arch-title">☠️ YOUR LLM APP</div>'
+            '<div class="rx-arch-desc">Unprotected attack surface</div>'
+            '<div class="rx-arch-sub">Vulnerable to OWASP LLM Top 10</div>'
+            "</div>"
+            '<div class="rx-arch-flow">'
+            '<div class="rx-arch-dot"></div>'
+            '<div class="rx-arch-dot"></div>'
+            '<div class="rx-arch-dot"></div>'
+            "</div>"
+            '<div class="rx-arch-box rx-arch-box-cyan">'
+            '<div class="rx-arch-title">🛡️ REMEDIAX ENGINE</div>'
+            '<div class="rx-arch-desc">SCAN &rarr; DETECT &rarr; REMEDIATE &rarr; VERIFY</div>'
+            '<div class="rx-arch-sub">Human-in-the-loop approval required</div>'
+            "</div>"
+            '<div class="rx-arch-flow">'
+            '<div class="rx-arch-dot"></div>'
+            '<div class="rx-arch-dot"></div>'
+            '<div class="rx-arch-dot"></div>'
+            "</div>"
+            '<div class="rx-arch-box rx-arch-box-green">'
+            '<div class="rx-arch-title">✅ HARDENED LLM</div>'
+            '<div class="rx-arch-desc">Protected by guardrails.yaml</div>'
+            '<div class="rx-arch-sub">Zero known attack vectors</div>'
+            "</div>",
             unsafe_allow_html=True,
         )
 
-        # How It Works
+        # Part B — Stats row (4 badges)
         st.markdown(
-            '<div class="rx-section-eyebrow">⚙️ HOW IT WORKS</div>',
+            '<div class="rx-stat-badges">'
+            '<div class="rx-stat-badge">'
+            '<div class="rx-stat-badge-v">☠️ 10</div>'
+            '<div class="rx-stat-badge-l">Attack Classes Covered</div></div>'
+            '<div class="rx-stat-badge">'
+            '<div class="rx-stat-badge-v">🛡️ 321</div>'
+            '<div class="rx-stat-badge-l">Security Controls</div></div>'
+            '<div class="rx-stat-badge">'
+            '<div class="rx-stat-badge-v">⚡ Real-time</div>'
+            '<div class="rx-stat-badge-l">Analysis</div></div>'
+            '<div class="rx-stat-badge">'
+            '<div class="rx-stat-badge-v">👤 HITL</div>'
+            '<div class="rx-stat-badge-l">Human-in-the-Loop</div></div>'
+            "</div>",
             unsafe_allow_html=True,
         )
-        steps = [
-            ("RUN GARAK SCANNER",
-             "Run garak against your LLM to generate hitlog.jsonl attack report."),
-            ("UPLOAD TO REMEDIAX",
-             "Drop your hitlog file or run live demo to see real attack patterns."),
-            ("REVIEW FINDINGS",
-             "Each vulnerability explained in plain English with severity rating."),
-            ("APPROVE PATCHES",
-             "Human-in-the-loop &mdash; you approve or skip every single remediation."),
-            ("DEPLOY GUARDRAILS",
-             "Download guardrails.yaml and deploy to your LLM gateway instantly."),
-        ]
-        steps_html = "".join(
-            f'<div class="rx-step">'
-            f'<div class="rx-step-num">{i}</div>'
-            f'<div><div class="rx-step-title">STEP {i} &middot; {title}</div>'
-            f'<div class="rx-step-desc">{desc}</div></div>'
-            f"</div>"
-            for i, (title, desc) in enumerate(steps, 1)
-        )
-        st.markdown(steps_html, unsafe_allow_html=True)
 
-        # Educational callouts
+        # Part C — Horizontal "How It Works" with arrows between
         st.markdown(
-            '<div class="rx-section-eyebrow" style="margin-top:24px;">'
-            "🛡️ SECURITY EXPLAINED</div>",
+            '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+            "⚙️ HOW IT WORKS</div>",
             unsafe_allow_html=True,
         )
-        callouts = [
-            ("orange", "WHAT IS PROMPT INJECTION?",
-             "Attackers embed hidden commands in user input to hijack your "
-             "LLM behavior. RemediAX detects and blocks at the gateway layer."),
-            ("cyan", "WHY HUMAN APPROVAL?",
-             "Zero-trust means no automated patch applies without explicit "
-             "human review. You control every security decision."),
-            ("green", "WHAT IS A GUARDRAIL?",
-             "A deployable config between your app and LLM blocking "
-             "malicious inputs before they reach the model."),
-            ("red", "WHAT IS A JAILBREAK?",
-             "Bypassing LLM safety using roleplay, encoding tricks, or "
-             "prompt manipulation. RemediAX catches all known patterns."),
+        howit_steps = [
+            ("1️⃣", "SCAN",    "Run garak scanner"),
+            ("2️⃣", "DETECT",  "Upload hitlog.jsonl"),
+            ("3️⃣", "REVIEW",  "Review findings"),
+            ("4️⃣", "APPROVE", "Approve patches"),
+            ("5️⃣", "DEPLOY",  "Deploy guardrails"),
         ]
-        callouts_html = "".join(
+        items: list[str] = []
+        for i, (num, title, desc) in enumerate(howit_steps):
+            items.append(
+                f'<div class="rx-howit-step">'
+                f'<div class="rx-howit-num">{num}</div>'
+                f'<div class="rx-howit-title">{title}</div>'
+                f'<div class="rx-howit-desc">{desc}</div>'
+                f"</div>"
+            )
+            if i < len(howit_steps) - 1:
+                items.append('<div class="rx-howit-arrow">&rarr;</div>')
+        st.markdown(
+            '<div class="rx-howit-row">' + "".join(items) + "</div>",
+            unsafe_allow_html=True,
+        )
+
+        # Part D — 2x2 security concepts grid
+        st.markdown(
+            '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+            "🛡️ SECURITY CONCEPTS</div>",
+            unsafe_allow_html=True,
+        )
+        concepts = [
+            ("orange", "PROMPT INJECTION",
+             "Attackers embed hidden commands in user input to hijack "
+             "your LLM behavior at runtime."),
+            ("cyan", "ZERO-TRUST REMEDIATION",
+             "No patch auto-applies. Every fix requires explicit human "
+             "approval by design."),
+            ("green", "GUARDRAILS",
+             "Deployable config blocking malicious inputs before they "
+             "reach your LLM model."),
+            ("red", "JAILBREAK ATTACKS",
+             "Bypassing LLM safety using roleplay and encoding tricks. "
+             "RemediAX catches all patterns."),
+        ]
+        grid_inner = "".join(
             f'<div class="rx-callout rx-callout-{color}">'
             f'<div class="rx-callout-title">{title}</div>'
             f'<div class="rx-callout-body">{body}</div>'
             f"</div>"
-            for color, title, body in callouts
+            for color, title, body in concepts
         )
-        st.markdown(callouts_html, unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="rx-concepts-grid">{grid_inner}</div>',
+            unsafe_allow_html=True,
+        )
 
     # ── RIGHT (40%): login card ─────────────────────────────────────
     with right_col:
@@ -1107,7 +1367,7 @@ def render_access() -> None:
             "&middot; Rate limited by IP"
         )
 
-        # Footer security badges
+        # Footer security badges (compact, inside the login card)
         st.markdown(
             '<div class="rx-security-strip">'
             '<span class="rx-sb">🔒 Zero-Trust Auth</span>'
@@ -1118,6 +1378,27 @@ def render_access() -> None:
             "</div>",
             unsafe_allow_html=True,
         )
+
+    # ── SECTION 3 — Full-width bottom badges bar ────────────────────
+    bottom_items = [
+        "🔒 Zero-Trust Auth",
+        "🔐 TLS Encrypted",
+        "👤 Human-in-the-Loop",
+        "☠️ Adversarial Input Hardening",
+        "🚫 No Data Persistence",
+        "♾️ CI/CD Verified",
+    ]
+    bottom_html = (
+        '<span class="rx-bb-sep">|</span>'.join(
+            f'<span class="rx-bb-item">{item}</span>' for item in bottom_items
+        )
+        + '<span class="rx-bb-sep">|</span>'
+        + '<span class="rx-bb-author">Built by Nileshwari Kadgale</span>'
+    )
+    st.markdown(
+        f'<div class="rx-bottom-bar">{bottom_html}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 # ---------------------------------------------------------------------------
