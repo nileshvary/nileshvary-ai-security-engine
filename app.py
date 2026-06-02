@@ -88,7 +88,7 @@ _GITHUB_URL = "https://github.com/nileshvary/nileshvary-ai-security-engine"
 _REMEMBER_PARAM = "t"
 _SCREEN_PARAM = "p"
 _RESTORABLE_SCREENS: frozenset[str] = frozenset(
-    {"landing", "summary", "review", "complete", "results", "admin"}
+    {"landing", "scanner", "summary", "review", "complete", "results", "admin"}
 )
 
 
@@ -1129,6 +1129,15 @@ def render_sidebar() -> None:
             help="Return to the landing screen from any page.",
         ):
             st.session_state.screen = "landing"
+            st.rerun()
+
+        if st.button(
+            "📡 Garak Scanner",
+            use_container_width=True,
+            key="nav-scanner",
+            help="Generate ready-to-run garak commands for your target.",
+        ):
+            st.session_state.screen = "scanner"
             st.rerun()
 
         st.divider()
@@ -2414,6 +2423,359 @@ def render_results() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Screen — Garak Scanner
+# ---------------------------------------------------------------------------
+
+
+_PROBE_OPTIONS: list[tuple[str, str, bool]] = [
+    # (UI label, garak probe code, default-checked)
+    ("Prompt Injection (DAN)", "dan", True),
+    ("Jailbreak attempts", "promptinject", True),
+    ("Data exfiltration", "leakreplay", True),
+    ("Supply chain attacks", "knownbadsignatures", True),
+    ("Hallucination probes", "snowball", False),
+]
+
+_TARGET_PROVIDERS: dict[str, list[str]] = {
+    "LLM Model": [
+        "OpenAI GPT-4",
+        "OpenAI GPT-3.5",
+        "Anthropic Claude",
+        "Google Gemini",
+        "Meta Llama",
+        "Mistral",
+        "Custom endpoint",
+    ],
+    "AI Agent": [
+        "LangChain",
+        "AutoGPT",
+        "CrewAI",
+        "Custom REST",
+    ],
+    "REST API Endpoint": ["Generic REST API"],
+    "Chatbot Application": ["Web chatbot", "Slack bot", "Discord bot"],
+    "Custom Python Function": ["Python function wrapper"],
+}
+
+
+def _build_garak_command(
+    target: str, provider: str, probe_codes: list[str]
+) -> tuple[str, str, str]:
+    """Return (install_step, command, estimate) for the chosen target/provider.
+
+    ``install_step`` is the pip install line (always
+    ``pip install garak``). ``command`` is the runnable garak invocation
+    with the user-selected probes injected. ``estimate`` is a coarse
+    expected runtime label.
+    """
+    install = "pip install garak"
+    if probe_codes:
+        probe_arg = ",".join(probe_codes)
+        probe_flag = f" --probes {probe_arg}"
+        estimate = "5–10 minutes (selected probes only)"
+    else:
+        probe_flag = ""
+        estimate = "30–60 minutes (all probes)"
+
+    cmd: str
+    if target == "LLM Model":
+        if "OpenAI" in provider:
+            cmd = (
+                f"garak --model openai "
+                f"--model_type openai.OpenAIGenerator{probe_flag} "
+                f"--generations 5"
+            )
+        elif "Claude" in provider:
+            cmd = (
+                f"garak --model anthropic "
+                f"--model_type anthropic.AnthropicGenerator{probe_flag} "
+                f"--generations 5"
+            )
+        elif "Gemini" in provider:
+            cmd = (
+                f"garak --model googleai "
+                f"--model_type googleai.GoogleAIGenerator{probe_flag} "
+                f"--generations 5"
+            )
+        elif "Llama" in provider:
+            cmd = (
+                f"garak --model huggingface "
+                f"--model_type huggingface.Model "
+                f"--model_name meta-llama/Llama-3-8B-Instruct"
+                f"{probe_flag} --generations 5"
+            )
+        elif "Mistral" in provider:
+            cmd = (
+                f"garak --model huggingface "
+                f"--model_type huggingface.Model "
+                f"--model_name mistralai/Mistral-7B-Instruct-v0.2"
+                f"{probe_flag} --generations 5"
+            )
+        else:  # Custom endpoint
+            cmd = (
+                f"garak --model rest --model_type rest.RestGenerator "
+                f"--uri YOUR_ENDPOINT_URL{probe_flag} --generations 5"
+            )
+    elif target == "AI Agent":
+        if "LangChain" in provider:
+            cmd = (
+                "# First wrap your LangChain agent with garak's function "
+                "generator:\n"
+                "# from garak.generators.function import SingleFunction\n"
+                "# Save a Python file (e.g. agent_wrap.py) that exposes a\n"
+                "# top-level `call(prompt: str) -> str` function which\n"
+                "# invokes your agent and returns the string output.\n"
+                "\n"
+                f"garak --model function "
+                f"--model_type function.SingleFunction "
+                f"--model_name agent_wrap.call{probe_flag} --generations 5"
+            )
+        elif "AutoGPT" in provider or "CrewAI" in provider:
+            cmd = (
+                f"# Expose your agent's input/output as a callable "
+                f"function, then run:\n"
+                f"garak --model function "
+                f"--model_type function.SingleFunction "
+                f"--model_name your_module.call{probe_flag} "
+                f"--generations 5"
+            )
+        else:  # Custom REST
+            cmd = (
+                f"garak --model rest --model_type rest.RestGenerator "
+                f"--uri YOUR_AGENT_REST_URL{probe_flag} --generations 5"
+            )
+    elif target == "REST API Endpoint":
+        cmd = (
+            f"garak --model rest --model_type rest.RestGenerator "
+            f"--uri YOUR_ENDPOINT_URL{probe_flag} --generations 5"
+        )
+    elif target == "Chatbot Application":
+        cmd = (
+            f"# Most chatbots expose a webhook URL or Bot API. Point "
+            f"garak's REST generator at it:\n"
+            f"garak --model rest --model_type rest.RestGenerator "
+            f"--uri YOUR_CHATBOT_WEBHOOK{probe_flag} --generations 5"
+        )
+    else:  # Custom Python Function
+        cmd = (
+            f"# Save a Python file (e.g. my_target.py) exposing\n"
+            f"# def call(prompt: str) -> str:\n"
+            f"#     return your_model(prompt)\n"
+            f"\n"
+            f"garak --model function "
+            f"--model_type function.SingleFunction "
+            f"--model_name my_target.call{probe_flag} --generations 5"
+        )
+    return install, cmd, estimate
+
+
+def render_scanner() -> None:
+    """Garak Scanner — generate ready-to-run commands for the user's target."""
+    st.markdown(
+        '<div class="remediax-hero"><h1>📡 GARAK THREAT SCANNER</h1>'
+        '<div class="tagline">Scan any LLM or AI agent for security '
+        "vulnerabilities</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── STEP 1 — Target type ────────────────────────────────────────
+    st.markdown(
+        '<div class="rx-section-eyebrow">STEP 1 — SELECT TARGET TYPE</div>',
+        unsafe_allow_html=True,
+    )
+    target = st.radio(
+        "Target type",
+        list(_TARGET_PROVIDERS.keys()),
+        index=0,
+        key="scanner-target",
+        label_visibility="collapsed",
+    )
+
+    # ── STEP 2 — Provider (depends on Step 1) ───────────────────────
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+        "STEP 2 — SELECT PROVIDER</div>",
+        unsafe_allow_html=True,
+    )
+    providers = _TARGET_PROVIDERS[target]
+    provider = st.radio(
+        "Provider",
+        providers,
+        index=0,
+        key=f"scanner-provider-{target}",
+        label_visibility="collapsed",
+    )
+
+    # ── STEP 3 — Probes ─────────────────────────────────────────────
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+        "STEP 3 — SELECT ATTACK PROBES</div>",
+        unsafe_allow_html=True,
+    )
+    selected_codes: list[str] = []
+    for label, code, default_checked in _PROBE_OPTIONS:
+        checked = st.checkbox(
+            label,
+            value=default_checked,
+            key=f"scanner-probe-{code}",
+        )
+        if checked:
+            selected_codes.append(code)
+
+    # "All probes" — premium only.
+    has_premium = _has_premium()
+    all_probes_label = "All probes (full sweep)"
+    if has_premium:
+        all_probes = st.checkbox(
+            all_probes_label,
+            value=False,
+            key="scanner-probe-all",
+            help="Runs every garak probe — much slower but maximum coverage.",
+        )
+        if all_probes:
+            selected_codes = []  # empty → no --probes flag → garak runs all
+    else:
+        st.checkbox(
+            f"🔒 {all_probes_label}",
+            value=False,
+            key="scanner-probe-all-locked",
+            disabled=True,
+            help="Premium feature — upgrade for full-sweep scans.",
+        )
+        st.caption(
+            "🔒 *All probes* is a Security Engineer feature. Run individual "
+            "probes above on the basic tier."
+        )
+
+    # ── STEP 4 — Generated commands ─────────────────────────────────
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+        "STEP 4 — GENERATED COMMANDS</div>",
+        unsafe_allow_html=True,
+    )
+    install_step, cmd, estimate = _build_garak_command(
+        target, provider, selected_codes
+    )
+    st.caption("**Step 4a — Install garak:**")
+    st.code(install_step, language="bash")
+    st.caption("**Step 4b — Run the scan:**")
+    st.code(cmd, language="bash")
+    st.caption(f"⏱️ Estimated scan time: **{estimate}**")
+
+    # ── STEP 5 — Find results ───────────────────────────────────────
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+        "STEP 5 — FIND YOUR RESULTS</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "garak writes a `hitlog.jsonl` to a per-user data directory:\n\n"
+        "- **Windows:** `C:\\Users\\<USERNAME>\\.local\\share\\garak\\`\n"
+        "- **macOS / Linux:** `~/.local/share/garak/`\n\n"
+        "Each run also produces a `report.jsonl` file in the same folder."
+    )
+    st.code(
+        "# Windows\n"
+        "explorer %USERPROFILE%\\.local\\share\\garak\n\n"
+        "# macOS / Linux\n"
+        "ls -la ~/.local/share/garak",
+        language="bash",
+    )
+
+    # ── STEP 6 — Upload results ─────────────────────────────────────
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+        "STEP 6 — UPLOAD RESULTS TO REMEDIAX</div>",
+        unsafe_allow_html=True,
+    )
+    if not has_premium:
+        _render_locked_feature(
+            "Upload scan results",
+            "Upload your scan results to RemediAX for analysis and "
+            "remediation. Upgrade to Security Engineer to ingest your "
+            "own hitlog.jsonl / report.jsonl files.",
+            key_suffix="-scanner-upload",
+        )
+    else:
+        st.markdown(
+            '<div class="rx-upload-frame">', unsafe_allow_html=True
+        )
+        uploaded = st.file_uploader(
+            "garak hitlog or report",
+            type=("jsonl", "json"),
+            label_visibility="collapsed",
+            key="scanner-uploader",
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+        if uploaded is not None and st.button(
+            "▶ Analyze in RemediAX",
+            use_container_width=True,
+            type="primary",
+            key="scanner-process",
+        ):
+            if not _can_run_scan():
+                _render_quota_exceeded_message()
+            else:
+                _consume_scan_quota(source="scanner-upload")
+                _ingest_uploaded(uploaded)
+
+    # ── STEP 7 — Or use the live demo ───────────────────────────────
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+        "STEP 7 — OR TRY THE LIVE DEMO</div>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "See how RemediAX works with sample attack data &mdash; no setup needed."
+    )
+    if st.button(
+        "▶ Run Live Exploit Demo",
+        use_container_width=True,
+        type="primary",
+        key="scanner-demo",
+    ):
+        if not _can_run_scan():
+            _render_quota_exceeded_message()
+        else:
+            _consume_scan_quota(source="scanner-demo")
+            st.session_state.findings = load_demo_findings()
+            st.session_state.screen = "summary"
+            st.rerun()
+
+    # ── EDUCATIONAL CARDS ───────────────────────────────────────────
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:30px;">'
+        "🛡️ ABOUT GARAK</div>",
+        unsafe_allow_html=True,
+    )
+    edu = [
+        ("cyan", "WHAT IS GARAK?",
+         "Open-source LLM security testing framework by NVIDIA. Probes "
+         "your AI with thousands of known attack patterns."),
+        ("orange", "HOW LONG DOES IT TAKE?",
+         "Quick scan: 5–10 minutes. Full scan: 30–60 minutes. Depends on "
+         "the number of probes and API response speed."),
+        ("green", "IS MY API KEY SAFE?",
+         "Your API key never touches RemediAX servers. Garak runs entirely "
+         "on your local machine. We only see the results."),
+        ("red", "WHAT ATTACKS ARE TESTED?",
+         "DAN jailbreaks, prompt injection, data exfiltration, encoding "
+         "attacks, supply chain, and 50+ more probe types."),
+    ]
+    cards_html = "".join(
+        f'<div class="rx-callout rx-callout-{color}">'
+        f'<div class="rx-callout-title">{title}</div>'
+        f'<div class="rx-callout-body">{body}</div>'
+        f"</div>"
+        for color, title, body in edu
+    )
+    st.markdown(
+        f'<div class="rx-concepts-grid">{cards_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Top-level dispatch
 # ---------------------------------------------------------------------------
 
@@ -2474,6 +2836,8 @@ def main() -> None:
         render_complete()
     elif screen == "results":
         render_results()
+    elif screen == "scanner":
+        render_scanner()
     elif screen == "admin":
         render_admin_panel()
     else:  # pragma: no cover - defensive
