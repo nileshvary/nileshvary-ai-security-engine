@@ -4,6 +4,7 @@ from database.email_notifier import send_admin_notification
 from database.firebase_manager import (
     FirebaseAuthError,
     create_user,
+    get_init_error,
     get_user,
     get_user_scans,
     get_user_tier,
@@ -19,6 +20,7 @@ from database.firebase_manager import (
 __all__ = [
     "FirebaseAuthError",
     "create_user",
+    "get_init_error",
     "get_user",
     "get_user_scans",
     "get_user_tier",

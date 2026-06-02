@@ -100,11 +100,88 @@ def fake_firebase(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 def test_init_firebase_without_secrets_returns_false() -> None:
     assert fm.init_firebase({}) is False
     assert fm.is_firebase_ready() is False
+    assert "section not found" in (fm.get_init_error() or "")
+
+
+def test_init_firebase_missing_web_api_key_returns_specific_error() -> None:
+    assert fm.init_firebase({"firebase": {"service_account": {"x": 1}}}) is False
+    assert "web_api_key" in (fm.get_init_error() or "")
+
+
+def test_init_firebase_empty_web_api_key_returns_specific_error() -> None:
+    assert fm.init_firebase(
+        {"firebase": {"web_api_key": "  ", "service_account": {"x": 1}}}
+    ) is False
+    assert "empty" in (fm.get_init_error() or "")
 
 
 def test_init_firebase_with_partial_secrets_returns_false() -> None:
     assert fm.init_firebase({"firebase": {"web_api_key": "x"}}) is False
     assert fm.is_firebase_ready() is False
+    err = fm.get_init_error() or ""
+    assert "service_account" in err
+    assert "missing" in err
+
+
+def test_init_firebase_flat_fallback_when_service_account_empty(
+    fake_firebase: SimpleNamespace,
+) -> None:
+    """Service-account fields inlined directly under [firebase] should still work."""
+    flat_secrets = {
+        "firebase": {
+            "web_api_key": "AIza-test",
+            "type": "service_account",
+            "project_id": "remediax-flat",
+            "private_key_id": "abc",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nxxx\n-----END PRIVATE KEY-----\n",
+            "client_email": "flat@flat.iam.gserviceaccount.com",
+            "client_id": "0",
+        }
+    }
+    assert fm.init_firebase(flat_secrets) is True
+    assert fm.is_firebase_ready() is True
+
+
+def test_init_firebase_private_key_missing_header_returns_specific_error(
+    fake_firebase: SimpleNamespace,
+) -> None:
+    bad = dict(_SECRETS)
+    bad = {
+        "firebase": {
+            "web_api_key": "AIza-test",
+            "service_account": {
+                "type": "service_account",
+                "project_id": "x",
+                "private_key": "not a real pem",
+                "client_email": "x@x.iam.gserviceaccount.com",
+            },
+        }
+    }
+    assert fm.init_firebase(bad) is False
+    assert "BEGIN PRIVATE KEY" in (fm.get_init_error() or "")
+
+
+def test_init_firebase_certificate_value_error_surfaces(
+    fake_firebase: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(_data):
+        raise ValueError("Invalid cert format")
+
+    monkeypatch.setattr(fake_firebase.credentials, "Certificate", boom)
+    assert fm.init_firebase(_SECRETS) is False
+    err = fm.get_init_error() or ""
+    assert "Certificate rejected" in err
+    assert "Invalid cert format" in err
+
+
+def test_get_init_error_clears_on_success(fake_firebase: SimpleNamespace) -> None:
+    # First, a failed call sets the error.
+    assert fm.init_firebase({"firebase": {}}) is False
+    assert fm.get_init_error() is not None
+    fm._reset_state_for_tests()
+    # Then a successful call clears it.
+    assert fm.init_firebase(_SECRETS) is True
+    assert fm.get_init_error() is None
 
 
 def test_init_firebase_succeeds_with_full_secrets(fake_firebase: SimpleNamespace) -> None:

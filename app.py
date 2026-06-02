@@ -60,6 +60,7 @@ from components.voice import (
 from database import (
     FirebaseAuthError,
     create_user,
+    get_init_error,
     get_user,
     init_firebase,
     is_firebase_ready,
@@ -1560,6 +1561,16 @@ def render_access() -> None:
                 "token login** at the bottom to sign in with an RMX-* "
                 "token."
             )
+            error = get_init_error()
+            if error:
+                with st.expander("🔍 Diagnostic — why Firebase init failed"):
+                    st.code(error, language="text")
+                    st.caption(
+                        "This message is also visible in the Streamlit "
+                        "Cloud → Manage app → Logs panel. If you fix "
+                        "the secrets and reboot the app the message will "
+                        "disappear."
+                    )
 
         login_tab, signup_tab = st.tabs(["🔓 ANALYST LOGIN", "✨ NEW OPERATOR"])
 

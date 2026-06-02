@@ -56,6 +56,12 @@ _TOKEN_REQUESTS_COLLECTION = "token_requests"
 _DEFAULT_TIER = "basic"
 _VALID_TIERS: frozenset[str] = frozenset({"basic", "premium", "developer"})
 
+# The minimum set of keys a Firebase service-account JSON must have for
+# firebase_admin.credentials.Certificate to accept it.
+_SERVICE_ACCOUNT_REQUIRED_FIELDS: frozenset[str] = frozenset(
+    {"type", "project_id", "private_key", "client_email"}
+)
+
 # Module-level state. Populated by ``init_firebase`` and read by all other
 # helpers. We intentionally do not initialize at import time so the
 # module is import-safe in environments without credentials (tests,
@@ -86,43 +92,181 @@ def init_firebase(secrets: Any) -> bool:
     if _state["ready"]:
         return True
 
+    # --- Step 1: locate the firebase section ---
     try:
         firebase_section = secrets["firebase"]
-        service_account = firebase_section["service_account"]
+    except (KeyError, TypeError) as exc:
+        return _fail(
+            f"st.secrets['firebase'] section not found "
+            f"({type(exc).__name__}: {exc})."
+        )
+
+    fb_keys = _safe_keys(firebase_section)
+    logger.info(
+        "Firebase init: found firebase section with %d top-level keys: %s",
+        len(fb_keys),
+        sorted(fb_keys),
+    )
+
+    # --- Step 2: web_api_key ---
+    try:
         web_api_key = firebase_section["web_api_key"]
     except (KeyError, TypeError) as exc:
-        _state["init_error"] = f"Missing secret: {exc}"
-        logger.info(
-            "Firebase secrets not configured (%s); auth disabled until set",
-            exc,
+        return _fail(
+            "st.secrets['firebase']['web_api_key'] is missing. Add the "
+            "Web API Key from Firebase console → Project settings "
+            f"→ General. ({type(exc).__name__}: {exc})"
         )
-        return False
+    if not str(web_api_key).strip():
+        return _fail("st.secrets['firebase']['web_api_key'] is empty.")
+    logger.info(
+        "Firebase init: web_api_key present (length=%d)",
+        len(str(web_api_key)),
+    )
 
+    # --- Step 3: service_account (nested), with fallback to flat shape ---
+    service_account_obj: Any | None = None
     try:
-        # Convert TOML-loaded service-account section to a plain dict.
-        cred_dict = dict(service_account)
-        # Lazy import — the package is heavy and not always present in
-        # contexts where init_firebase is being called defensively.
+        service_account_obj = firebase_section["service_account"]
+    except (KeyError, TypeError):
+        service_account_obj = None
+
+    sa_keys = _safe_keys(service_account_obj) if service_account_obj is not None else set()
+    if service_account_obj is not None:
+        logger.info(
+            "Firebase init: found service_account sub-section with keys: %s",
+            sorted(sa_keys),
+        )
+
+    if not sa_keys:
+        # Fallback: maybe the service-account fields are inlined under
+        # ``[firebase]`` (e.g. a stray duplicate ``[firebase]`` header
+        # in the TOML collapsed the table back).
+        if _SERVICE_ACCOUNT_REQUIRED_FIELDS.issubset(fb_keys):
+            logger.warning(
+                "Firebase init: service_account section is missing or "
+                "empty; falling back to flat firebase.* fields"
+            )
+            service_account_obj = {
+                k: firebase_section[k] for k in fb_keys if k != "web_api_key"
+            }
+            sa_keys = set(service_account_obj.keys())
+        else:
+            present = fb_keys & _SERVICE_ACCOUNT_REQUIRED_FIELDS
+            missing = _SERVICE_ACCOUNT_REQUIRED_FIELDS - fb_keys
+            return _fail(
+                f"st.secrets['firebase']['service_account'] is missing or "
+                f"empty, and the flat fallback fields are incomplete. "
+                f"Required: {sorted(_SERVICE_ACCOUNT_REQUIRED_FIELDS)}; "
+                f"present directly in firebase section: {sorted(present)}; "
+                f"still missing: {sorted(missing)}."
+            )
+
+    # --- Step 4: build plain dict + validate required fields ---
+    try:
+        cred_dict: dict[str, Any] = {
+            str(k): service_account_obj[k] for k in sa_keys
+        }
+    except Exception as exc:
+        return _fail(
+            f"Failed to read service_account fields: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    missing_required = _SERVICE_ACCOUNT_REQUIRED_FIELDS - set(cred_dict.keys())
+    if missing_required:
+        return _fail(
+            f"service_account is missing required fields: "
+            f"{sorted(missing_required)}. Present: "
+            f"{sorted(cred_dict.keys())}."
+        )
+
+    # --- Step 5: sanity-check private_key (header + newlines) ---
+    private_key_raw = str(cred_dict.get("private_key", ""))
+    if "BEGIN PRIVATE KEY" not in private_key_raw:
+        return _fail(
+            "service_account['private_key'] does not contain "
+            "'BEGIN PRIVATE KEY'. Check that the PEM header survived "
+            "the paste."
+        )
+    if "\n" not in private_key_raw:
+        logger.warning(
+            "Firebase init: private_key has no real newlines; converting "
+            "literal '\\n' escapes to newlines"
+        )
+        cred_dict["private_key"] = private_key_raw.replace("\\n", "\n")
+
+    logger.info(
+        "Firebase init: cred dict ready (project_id=%s, client_email=%s, "
+        "private_key length=%d)",
+        cred_dict.get("project_id"),
+        cred_dict.get("client_email"),
+        len(str(cred_dict.get("private_key", ""))),
+    )
+
+    # --- Step 6: initialize firebase_admin ---
+    try:
         import firebase_admin
         from firebase_admin import credentials
+    except Exception as exc:
+        return _fail(
+            f"firebase_admin package is not installed or failed to "
+            f"import: {type(exc).__name__}: {exc}"
+        )
 
+    try:
         if not firebase_admin._apps:  # noqa: SLF001 - idiomatic check
             firebase_admin.initialize_app(credentials.Certificate(cred_dict))
-    except Exception as exc:  # pragma: no cover - exercised only with real creds
-        _state["init_error"] = str(exc)
-        logger.warning("Firebase admin init failed: %s", exc)
-        return False
+    except ValueError as exc:
+        return _fail(
+            f"firebase_admin.credentials.Certificate rejected the "
+            f"service_account dict: {exc}"
+        )
+    except Exception as exc:
+        return _fail(
+            f"firebase_admin.initialize_app raised "
+            f"{type(exc).__name__}: {exc}"
+        )
 
     _state["ready"] = True
     _state["web_api_key"] = str(web_api_key)
     _state["init_error"] = None
-    logger.info("Firebase admin initialized")
+    logger.info(
+        "Firebase admin initialized successfully (project_id=%s)",
+        cred_dict.get("project_id"),
+    )
     return True
 
 
 def is_firebase_ready() -> bool:
     """True when ``init_firebase`` has succeeded at least once this process."""
     return bool(_state["ready"])
+
+
+def get_init_error() -> str | None:
+    """Return the most recent init failure reason, or ``None`` if ready / never tried."""
+    return _state.get("init_error")
+
+
+def _safe_keys(obj: Any) -> set[str]:
+    """Best-effort key listing for Streamlit Secrets objects / dicts / None."""
+    if obj is None:
+        return set()
+    try:
+        return {str(k) for k in obj.keys()}
+    except (AttributeError, TypeError):
+        pass
+    try:
+        return {str(k) for k in dict(obj).keys()}
+    except Exception:
+        return set()
+
+
+def _fail(reason: str) -> bool:
+    """Record an init failure, log it, and return ``False``."""
+    _state["init_error"] = reason
+    logger.warning("Firebase init failed: %s", reason)
+    return False
 
 
 # ---------------------------------------------------------------------------
