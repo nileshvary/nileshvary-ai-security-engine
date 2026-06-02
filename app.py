@@ -436,6 +436,203 @@ h1, h2, h3, h4, h5 { color: var(--text-primary) !important; }
 }
 .rx-security-badges .rx-sb { color: #e6edf3; }
 .rx-security-badges .rx-sb-sep { color: #1e3a5f; }
+
+/* === Access screen (two-column enterprise layout) === */
+
+/* Stats bar at top */
+.rx-access-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+  padding: 14px 18px;
+  background: #0d1117;
+  border: 1px solid #1e3a5f;
+  border-radius: 8px;
+  margin: 14px 0 22px;
+  text-align: center;
+}
+.rx-access-stat-v {
+  font-size: 1.05rem; font-weight: 700; color: #00d4ff;
+  font-family: monospace;
+}
+.rx-access-stat-l {
+  color: #8b949e; font-size: 0.78rem; margin-top: 2px;
+}
+
+/* Live threat ticker — 5 messages cycling every 2s (10s total loop) */
+.rx-ticker {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px;
+  background: #0d1117;
+  border: 1px solid #1e3a5f;
+  border-left: 3px solid #ff4444;
+  border-radius: 6px;
+  margin-bottom: 22px;
+  min-height: 3em;
+}
+.rx-ticker-dot {
+  flex-shrink: 0;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: #ff4444;
+  animation: rx-pulse-red 1.5s infinite;
+}
+@keyframes rx-pulse-red {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 68, 68, 0.8); }
+  50% { box-shadow: 0 0 0 10px rgba(255, 68, 68, 0); }
+}
+.rx-ticker-msgs {
+  position: relative;
+  flex: 1;
+  height: 1.4em;
+  font-family: monospace;
+  color: #e6edf3;
+  font-size: 0.92rem;
+  overflow: hidden;
+}
+.rx-ticker-msg {
+  position: absolute;
+  left: 0; top: 0;
+  opacity: 0;
+  white-space: nowrap;
+  animation: rx-ticker-cycle 10s infinite;
+}
+.rx-ticker-msg:nth-child(1) { animation-delay: 0s; }
+.rx-ticker-msg:nth-child(2) { animation-delay: 2s; }
+.rx-ticker-msg:nth-child(3) { animation-delay: 4s; }
+.rx-ticker-msg:nth-child(4) { animation-delay: 6s; }
+.rx-ticker-msg:nth-child(5) { animation-delay: 8s; }
+@keyframes rx-ticker-cycle {
+  0%  { opacity: 0; transform: translateY(8px); }
+  3%  { opacity: 1; transform: translateY(0); }
+  18% { opacity: 1; transform: translateY(0); }
+  22% { opacity: 0; transform: translateY(-8px); }
+  100%{ opacity: 0; transform: translateY(-8px); }
+}
+
+/* "HOW IT WORKS" steps */
+.rx-section-eyebrow {
+  font-family: monospace;
+  font-size: 0.82rem;
+  letter-spacing: 0.12em;
+  color: #00d4ff;
+  margin: 8px 0 12px;
+  font-weight: 700;
+}
+.rx-step {
+  display: flex; gap: 14px; align-items: flex-start;
+  padding: 12px 14px;
+  margin: 8px 0;
+  background: #0d1117;
+  border: 1px solid #1e3a5f;
+  border-radius: 8px;
+  transition: box-shadow 0.2s, border-color 0.2s;
+}
+.rx-step:hover {
+  border-color: #00d4ff;
+  box-shadow: 0 0 12px rgba(0, 212, 255, 0.15);
+}
+.rx-step-num {
+  flex-shrink: 0;
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  background: #0a0e1a;
+  border: 2px solid #00d4ff;
+  color: #00d4ff;
+  font-family: monospace;
+  font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 0 10px rgba(0, 212, 255, 0.5);
+}
+.rx-step-title {
+  color: #00d4ff;
+  font-family: monospace;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+}
+.rx-step-desc {
+  color: #e6edf3;
+  font-size: 0.88rem;
+  margin-top: 3px;
+  line-height: 1.45;
+}
+
+/* Educational callout boxes (4 colors) */
+.rx-callout {
+  background: #0d1117;
+  border: 1px solid #1e3a5f;
+  border-left-width: 4px;
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin: 8px 0;
+  transition: box-shadow 0.2s;
+}
+.rx-callout:hover { box-shadow: 0 0 12px rgba(255, 255, 255, 0.06); }
+.rx-callout-orange { border-left-color: #ff6600; }
+.rx-callout-cyan   { border-left-color: #00d4ff; }
+.rx-callout-green  { border-left-color: #00ff88; }
+.rx-callout-red    { border-left-color: #ff4444; }
+.rx-callout-title {
+  font-weight: 700;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  font-family: monospace;
+}
+.rx-callout-orange .rx-callout-title { color: #ff6600; }
+.rx-callout-cyan   .rx-callout-title { color: #00d4ff; }
+.rx-callout-green  .rx-callout-title { color: #00ff88; }
+.rx-callout-red    .rx-callout-title { color: #ff4444; }
+.rx-callout-body {
+  color: #e6edf3;
+  font-size: 0.88rem;
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+/* Right column login card — applies the cyan glow to the Streamlit
+ * column that contains the marker div. Uses :has() (Chrome 105+,
+ * Safari 15.4+, Firefox 121+). Older browsers see a plain column. */
+[data-testid="stColumn"]:has(.rx-login-marker) > div {
+  background: #0d1117;
+  border: 1px solid #00d4ff;
+  border-radius: 10px;
+  padding: 18px !important;
+  box-shadow: 0 0 22px rgba(0, 212, 255, 0.22);
+}
+.rx-login-title {
+  text-align: center;
+  font-family: monospace;
+  letter-spacing: 0.06em;
+  color: #00d4ff;
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 4px 0 2px;
+}
+.rx-login-tagline {
+  text-align: center;
+  color: #8b949e;
+  font-size: 0.85rem;
+  margin-bottom: 14px;
+}
+.rx-access-divider {
+  text-align: center;
+  margin: 16px 0 10px;
+  color: #8b949e;
+  font-family: monospace;
+  letter-spacing: 0.1em;
+}
+.rx-security-strip {
+  display: flex; flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 10px;
+  margin-top: 14px;
+  font-family: monospace;
+  font-size: 0.72rem;
+  color: #8b949e;
+}
+.rx-security-strip .rx-sb { color: #e6edf3; }
+.rx-security-strip .rx-sb-sep { color: #1e3a5f; }
 </style>
 """
 
@@ -747,14 +944,105 @@ def render_sidebar() -> None:
 
 
 def render_access() -> None:
+    # ── Stats bar at the top (4 columns) ─────────────────────────────
     st.markdown(
-        '<div class="remediax-hero scanning"><h1>🛡️ REMEDIAX</h1>'
-        '<div class="tagline">AI Security, Human Control</div></div>',
+        '<div class="rx-access-stats">'
+        '<div><div class="rx-access-stat-v">10</div>'
+        '<div class="rx-access-stat-l">OWASP LLM Categories</div></div>'
+        '<div><div class="rx-access-stat-v">321</div>'
+        '<div class="rx-access-stat-l">Tests Passing</div></div>'
+        '<div><div class="rx-access-stat-v">Real-time</div>'
+        '<div class="rx-access-stat-l">Analysis</div></div>'
+        '<div><div class="rx-access-stat-v">Human-in-the-Loop</div>'
+        '<div class="rx-access-stat-l">Zero-trust by design</div></div>'
+        "</div>",
         unsafe_allow_html=True,
     )
-    left, mid, right = st.columns([1, 2, 1])
-    with mid:
-        st.markdown("#### Access RemediAX")
+
+    left_col, right_col = st.columns([3, 2], gap="large")
+
+    # ── LEFT (60%): educational content ──────────────────────────────
+    with left_col:
+        # Live threat ticker
+        st.markdown(
+            '<div class="rx-ticker">'
+            '<div class="rx-ticker-dot"></div>'
+            '<div class="rx-ticker-msgs">'
+            '<div class="rx-ticker-msg">🔴 Prompt Injection detected &rarr; Neutralized ✅</div>'
+            '<div class="rx-ticker-msg">🔴 Jailbreak attempt blocked &rarr; Patched ✅</div>'
+            '<div class="rx-ticker-msg">🔴 Data exfiltration attempt &rarr; Remediated ✅</div>'
+            '<div class="rx-ticker-msg">🔴 Supply chain compromise &rarr; Escalated ⚠️</div>'
+            '<div class="rx-ticker-msg">🔴 Sensitive data leak &rarr; Redacted ✅</div>'
+            "</div></div>",
+            unsafe_allow_html=True,
+        )
+
+        # How It Works
+        st.markdown(
+            '<div class="rx-section-eyebrow">⚙️ HOW IT WORKS</div>',
+            unsafe_allow_html=True,
+        )
+        steps = [
+            ("RUN GARAK SCANNER",
+             "Run garak against your LLM to generate hitlog.jsonl attack report."),
+            ("UPLOAD TO REMEDIAX",
+             "Drop your hitlog file or run live demo to see real attack patterns."),
+            ("REVIEW FINDINGS",
+             "Each vulnerability explained in plain English with severity rating."),
+            ("APPROVE PATCHES",
+             "Human-in-the-loop &mdash; you approve or skip every single remediation."),
+            ("DEPLOY GUARDRAILS",
+             "Download guardrails.yaml and deploy to your LLM gateway instantly."),
+        ]
+        steps_html = "".join(
+            f'<div class="rx-step">'
+            f'<div class="rx-step-num">{i}</div>'
+            f'<div><div class="rx-step-title">STEP {i} &middot; {title}</div>'
+            f'<div class="rx-step-desc">{desc}</div></div>'
+            f"</div>"
+            for i, (title, desc) in enumerate(steps, 1)
+        )
+        st.markdown(steps_html, unsafe_allow_html=True)
+
+        # Educational callouts
+        st.markdown(
+            '<div class="rx-section-eyebrow" style="margin-top:24px;">'
+            "🛡️ SECURITY EXPLAINED</div>",
+            unsafe_allow_html=True,
+        )
+        callouts = [
+            ("orange", "WHAT IS PROMPT INJECTION?",
+             "Attackers embed hidden commands in user input to hijack your "
+             "LLM behavior. RemediAX detects and blocks at the gateway layer."),
+            ("cyan", "WHY HUMAN APPROVAL?",
+             "Zero-trust means no automated patch applies without explicit "
+             "human review. You control every security decision."),
+            ("green", "WHAT IS A GUARDRAIL?",
+             "A deployable config between your app and LLM blocking "
+             "malicious inputs before they reach the model."),
+            ("red", "WHAT IS A JAILBREAK?",
+             "Bypassing LLM safety using roleplay, encoding tricks, or "
+             "prompt manipulation. RemediAX catches all known patterns."),
+        ]
+        callouts_html = "".join(
+            f'<div class="rx-callout rx-callout-{color}">'
+            f'<div class="rx-callout-title">{title}</div>'
+            f'<div class="rx-callout-body">{body}</div>'
+            f"</div>"
+            for color, title, body in callouts
+        )
+        st.markdown(callouts_html, unsafe_allow_html=True)
+
+    # ── RIGHT (40%): login card ─────────────────────────────────────
+    with right_col:
+        # Marker the CSS uses to find this column and apply the cyan glow.
+        st.markdown('<div class="rx-login-marker"></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="rx-login-title">🛡️ REMEDIAX</div>'
+            '<div class="rx-login-tagline">AI Security &middot; Human Control</div>',
+            unsafe_allow_html=True,
+        )
+
         with st.form("access-form"):
             token_input = st.text_input(
                 "Access token",
@@ -765,13 +1053,14 @@ def render_access() -> None:
                 "Remember me on this device",
                 value=False,
                 help=(
-                    "Stores your token in this browser's localStorage so you "
-                    "stay signed in across page refreshes. Anyone with access "
-                    "to this browser profile can read it. Uncheck on shared "
-                    "machines."
+                    "Stores your token in the URL so you stay signed in "
+                    "across page refreshes. Anyone with the URL can use "
+                    "the token. Uncheck on shared screens."
                 ),
             )
-            submit = st.form_submit_button("🔓 Access RemediAX", use_container_width=True)
+            submit = st.form_submit_button(
+                "🔓 Access RemediAX", use_container_width=True
+            )
         if submit:
             tm = TokenManager()
             ok, status, record = tm.validate_token(token_input, ip=_client_id())
@@ -785,8 +1074,6 @@ def render_access() -> None:
                 if remember_me:
                     _persist_token(token_input.strip())
                 else:
-                    # If the user explicitly opted out, clear any
-                    # previously remembered token so the choice sticks.
                     _clear_remembered_token()
                 st.rerun()
             elif status.startswith("locked:"):
@@ -801,14 +1088,10 @@ def render_access() -> None:
                 st.error(f"❌ Invalid token. {remaining} attempts remaining.")
             else:
                 st.error(f"❌ {status}")
-    # ── Guest fallback ───────────────────────────────────────────────
-    # Anyone without a token can still try the tool — 3 free scans / day.
-    left, mid, right = st.columns([1, 2, 1])
-    with mid:
+
+        # Guest divider + button
         st.markdown(
-            '<div style="text-align:center;margin:18px 0 8px;'
-            'color:#8b949e;font-family:monospace;letter-spacing:0.08em;">'
-            "──────── or ────────</div>",
+            '<div class="rx-access-divider">──── or ────</div>',
             unsafe_allow_html=True,
         )
         if st.button(
@@ -824,11 +1107,17 @@ def render_access() -> None:
             "&middot; Rate limited by IP"
         )
 
-    st.divider()
-    cols = st.columns(3)
-    cols[0].caption("⏱️ Tokens are time-limited (48h default)")
-    cols[1].caption("🔒 All sessions encrypted via HTTPS")
-    cols[2].caption("📧 [Request access](mailto:nileshvary@gmail.com)")
+        # Footer security badges
+        st.markdown(
+            '<div class="rx-security-strip">'
+            '<span class="rx-sb">🔒 Zero-Trust Auth</span>'
+            '<span class="rx-sb-sep">·</span>'
+            '<span class="rx-sb">🔐 TLS Encrypted</span>'
+            '<span class="rx-sb-sep">·</span>'
+            '<span class="rx-sb">👤 Human-in-the-Loop</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
 
 
 # ---------------------------------------------------------------------------
