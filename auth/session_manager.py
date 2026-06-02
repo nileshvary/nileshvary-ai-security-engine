@@ -12,7 +12,13 @@ from typing import Any
 _DEFAULTS: dict[str, Any] = {
     "screen": "access",
     "authenticated": False,
-    "guest_mode": False,
+    # Firebase user identity (set after email/password login or signup).
+    "user_uid": None,
+    "user_email": None,
+    "user_name": None,
+    "user_tier": None,
+    # Admin token branch still uses these — preserved for the existing
+    # ``?t=RMX-...`` flow.
     "token_record": {},
     "findings": [],
     "remediation_results": [],

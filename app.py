@@ -57,6 +57,18 @@ from components.voice import (
     escape_for_speech,
     get_voice_js,
 )
+from database import (
+    FirebaseAuthError,
+    create_user,
+    get_user,
+    init_firebase,
+    is_firebase_ready,
+    login_user,
+    save_scan,
+    save_token_request,
+    scans_this_month,
+    send_admin_notification,
+)
 from demo_data import load_demo_findings
 
 from integration_bridge import Finding, GarakParser
@@ -866,69 +878,73 @@ def _client_id() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Public access tier (no token required — 3 free scans / day per IP)
+# Tier + scan quota (Firebase-backed)
 # ---------------------------------------------------------------------------
 
 _REQUEST_ACCESS_MAILTO = (
     "mailto:nileshvary@gmail.com"
-    "?subject=RemediAX%20Full%20Access%20Request"
-    "&body=Hi%2C%20I%27d%20like%20unlimited%20RemediAX%20access.%20Thanks!"
+    "?subject=RemediAX%20Premium%20Access%20Request"
+    "&body=Hi%2C%20I%27d%20like%20premium%20RemediAX%20access.%20Thanks!"
 )
 
-
-def _public_rate_key() -> str:
-    """Return a stable id for rate-limiting one public (unauthenticated) user.
-
-    Prefers the real client IP from ``X-Forwarded-For`` (Streamlit Cloud
-    sets this when the request goes through their proxy). Falls back to
-    a session-scoped UUID when running locally or behind a proxy that
-    strips the header. Both paths return a 16-char SHA-256 prefix so
-    the actual IP never appears in ``.remediax_usage.json``.
-    """
-    ip = ""
-    try:
-        headers = getattr(st.context, "headers", {}) or {}
-        forwarded = headers.get("X-Forwarded-For") or headers.get("x-forwarded-for") or ""
-        ip = forwarded.split(",")[0].strip() if forwarded else ""
-    except Exception:
-        ip = ""
-    if ip:
-        return "ip-" + hashlib.sha256(("rmx-public:" + ip).encode()).hexdigest()[:16]
-    if "public_session_key" not in st.session_state:
-        st.session_state.public_session_key = uuid.uuid4().hex[:16]
-    return "sess-" + st.session_state.public_session_key
+_BASIC_MONTHLY_CAP = 3
+_UNLIMITED_TIERS: frozenset[str] = frozenset({"premium", "developer"})
 
 
-def _scans_remaining_today() -> int:
-    """Free scans the current public user has left today. Returns -1 for token users."""
-    if st.session_state.authenticated:
+def _current_tier() -> str | None:
+    """Return the authenticated user's tier, or ``None`` if unauthenticated."""
+    if not st.session_state.authenticated:
+        return None
+    if st.session_state.get("is_admin"):
+        return "developer"
+    return st.session_state.get("user_tier")
+
+
+def _is_unlimited_tier() -> bool:
+    """True when the user has no scan quota cap (premium / developer / admin)."""
+    return _current_tier() in _UNLIMITED_TIERS
+
+
+def _scans_remaining_this_month() -> int:
+    """Scans the current basic-tier user has left this month. ``-1`` = unlimited."""
+    if _is_unlimited_tier():
         return -1
-    rl = RateLimiter()
-    return max(0, rl.daily_cap - rl.usage_today(_public_rate_key()))
+    uid = st.session_state.get("user_uid")
+    if not uid:
+        return 0
+    used = scans_this_month(uid)
+    return max(0, _BASIC_MONTHLY_CAP - used)
 
 
 def _can_run_scan() -> bool:
     """True when the user is allowed to run one more scan right now."""
-    if st.session_state.authenticated:
+    if _is_unlimited_tier():
         return True
-    return _scans_remaining_today() > 0
+    return _scans_remaining_this_month() > 0
 
 
-def _consume_scan_quota() -> None:
-    """Increment the public-user scan counter. No-op for token users."""
-    if st.session_state.authenticated:
+def _consume_scan_quota(*, source: str = "unknown") -> None:
+    """Record one scan against the user's quota by writing to Firestore."""
+    uid = st.session_state.get("user_uid")
+    if not uid:
         return
-    RateLimiter().check_and_increment(_public_rate_key(), has_api_key=False)
+    save_scan(
+        uid,
+        {
+            "source": source,
+            "tier_at_scan": _current_tier() or "unknown",
+        },
+    )
 
 
 def _render_quota_exceeded_message() -> None:
-    """Surface the upsell banner when a public user is at limit."""
+    """Surface the upsell banner when a basic-tier user is at limit."""
     st.warning(
-        "You have used your 3 free daily scans. "
-        "Request full access for unlimited scanning."
+        f"You have used your {_BASIC_MONTHLY_CAP} free scans this month. "
+        "Upgrade for unlimited scanning."
     )
     st.link_button(
-        "📧 Request Access",
+        "📧 Request Premium Access",
         _REQUEST_ACCESS_MAILTO,
         use_container_width=False,
     )
@@ -1093,59 +1109,65 @@ def render_sidebar() -> None:
 
         st.divider()
         st.markdown("**Access**")
-        if st.session_state.authenticated:
-            # Token user (registered) — unlimited scans, may be admin.
+        if not st.session_state.authenticated:
+            # Should not reach here — main() forces unauthenticated to
+            # access screen — but render defensively just in case.
+            st.caption("Sign in to use RemediAX.")
+        elif st.session_state.get("is_admin"):
             record = st.session_state.token_record or {}
             token_id = record.get("hash", "?")[:8] if record else "—"
-            tier = "Admin" if is_admin() else "Token user"
-            st.caption(f"Tier: **{tier}**")
+            st.caption("Tier: **🛡️ ADMIN**")
             st.caption(f"Token id: `{token_id}`")
             st.caption(_ts_label())
-            st.caption("Scans today: unlimited")
+            st.caption("Scans: unlimited")
 
             st.divider()
-            if is_admin():
-                nav_admin, nav_logout = st.columns(2)
-                if nav_admin.button("👤 Admin", use_container_width=True):
-                    st.session_state.screen = "admin"
-                    st.rerun()
-                if nav_logout.button(
-                    "🚪 Logout",
-                    use_container_width=True,
-                    key="sidebar-logout-admin",
-                ):
-                    _do_logout()
-            else:
-                if st.button(
-                    "🚪 Logout",
-                    use_container_width=True,
-                    key="sidebar-logout-token",
-                ):
-                    _do_logout()
+            nav_admin, nav_logout = st.columns(2)
+            if nav_admin.button("👤 Admin", use_container_width=True):
+                st.session_state.screen = "admin"
+                st.rerun()
+            if nav_logout.button(
+                "🚪 Logout",
+                use_container_width=True,
+                key="sidebar-logout-admin",
+            ):
+                _do_logout()
         else:
-            # Guest user — opted in from the access screen for 3 free
-            # scans / day per IP.
-            remaining = _scans_remaining_today()
-            cap = RateLimiter().daily_cap
-            st.caption("Tier: **Public (free)**")
-            st.caption(f"Free scans remaining: **{remaining}/{cap}**")
-            if remaining == 0:
-                st.caption("⚠️ Daily limit reached")
-
-            st.link_button(
-                "📧 Request Full Access",
-                _REQUEST_ACCESS_MAILTO,
-                use_container_width=True,
+            # Firebase-authenticated user.
+            name = st.session_state.get("user_name") or "Analyst"
+            email = st.session_state.get("user_email") or ""
+            tier = st.session_state.get("user_tier") or "basic"
+            tier_label = (
+                "🛡️ SECURITY ENGINEER" if tier in _UNLIMITED_TIERS else "🔬 ANALYST"
             )
+            st.caption(f"**{name}**")
+            if email:
+                st.caption(f"`{email}`")
+            st.caption(f"Tier: **{tier_label}**")
+            if tier in _UNLIMITED_TIERS:
+                st.caption("Scans: unlimited")
+            else:
+                remaining = _scans_remaining_this_month()
+                st.caption(
+                    f"Scans remaining: **{remaining}/{_BASIC_MONTHLY_CAP}** this month"
+                )
+                if remaining == 0:
+                    st.caption("⚠️ Monthly limit reached")
+
+            st.divider()
+            if tier not in _UNLIMITED_TIERS:
+                if st.button(
+                    "⬆️ Upgrade to Premium",
+                    use_container_width=True,
+                    key="sidebar-upgrade",
+                ):
+                    st.session_state.screen = "access"
+                    st.session_state.show_premium_form = True
+                    st.rerun()
             if st.button(
-                "🚪 Exit Guest",
+                "🚪 Logout",
                 use_container_width=True,
-                key="sidebar-exit-guest",
-                help=(
-                    "Clear all session data and return to the login "
-                    "screen. From there you can paste a token or "
-                    "continue as guest again."
-                ),
+                key="sidebar-logout-firebase",
             ):
                 _do_logout()
 
@@ -1157,6 +1179,232 @@ def render_sidebar() -> None:
 # ---------------------------------------------------------------------------
 # Screen 0 — Access
 # ---------------------------------------------------------------------------
+
+
+def _activate_firebase_session(profile: dict[str, Any]) -> None:
+    """Promote a Firebase-authenticated user into the active session."""
+    st.session_state.authenticated = True
+    st.session_state.user_uid = profile.get("uid")
+    st.session_state.user_email = profile.get("email")
+    st.session_state.user_name = profile.get("name")
+    st.session_state.user_tier = profile.get("tier") or "basic"
+    st.session_state.is_admin = False
+    st.session_state.token_record = {}
+    st.session_state.screen = "landing"
+
+
+def _render_login_tab() -> None:
+    """ANALYST LOGIN — email/password sign-in via the Firebase Auth REST API."""
+    with st.form("fb-login-form"):
+        email = st.text_input(
+            "Email", key="fb-login-email", autocomplete="email"
+        )
+        password = st.text_input(
+            "Password",
+            type="password",
+            key="fb-login-password",
+        )
+        remember_me = st.checkbox(
+            "Remember me", value=False, key="fb-login-remember"
+        )
+        submit = st.form_submit_button(
+            "🔐 AUTHENTICATE", use_container_width=True, type="primary"
+        )
+    if submit:
+        if not is_firebase_ready():
+            st.error("Firebase is not configured for this deployment.")
+            return
+        if not email or not password:
+            st.error("Please enter both email and password.")
+            return
+        try:
+            profile = login_user(email.strip(), password)
+        except FirebaseAuthError as exc:
+            st.error(f"❌ {exc}")
+            return
+        _activate_firebase_session(profile)
+        st.success(f"Welcome back, {profile.get('name') or email}!")
+        if remember_me:
+            # Note: Firebase id_token is short-lived; we do NOT persist
+            # email/password to URL. Remember-me is best-effort and only
+            # keeps the session alive until the tab closes.
+            pass
+        st.rerun()
+
+    # Google Sign In — stub for v1.0
+    if st.button(
+        "🔵 Sign in with Google",
+        use_container_width=True,
+        key="fb-google-login",
+        help="Coming soon — Google OAuth is on the roadmap.",
+    ):
+        st.info(
+            "🔵 Google Sign In rolling out soon — please use email / "
+            "password for now."
+        )
+
+
+def _render_signup_tab() -> None:
+    """NEW OPERATOR — create a Firebase Auth user and seed their profile."""
+    with st.form("fb-signup-form"):
+        name = st.text_input("Full name", key="fb-signup-name")
+        email = st.text_input(
+            "Email", key="fb-signup-email", autocomplete="email"
+        )
+        password = st.text_input(
+            "Password",
+            type="password",
+            key="fb-signup-password",
+            help="Minimum 6 characters.",
+        )
+        confirm = st.text_input(
+            "Confirm password",
+            type="password",
+            key="fb-signup-confirm",
+        )
+        submit = st.form_submit_button(
+            "📝 REGISTER AS ANALYST", use_container_width=True, type="primary"
+        )
+    if submit:
+        if not is_firebase_ready():
+            st.error("Firebase is not configured for this deployment.")
+            return
+        if not name or not email or not password:
+            st.error("Please fill in name, email, and password.")
+            return
+        if password != confirm:
+            st.error("Passwords do not match.")
+            return
+        if len(password) < 6:
+            st.error("Password must be at least 6 characters.")
+            return
+        try:
+            profile = create_user(email.strip(), password, name.strip())
+        except FirebaseAuthError as exc:
+            st.error(f"❌ {exc}")
+            return
+        # Sign the new user in immediately so they can use the tool.
+        try:
+            login_profile = login_user(email.strip(), password)
+        except FirebaseAuthError as exc:
+            st.warning(
+                f"Account created but auto sign-in failed: {exc}. "
+                "Please sign in manually."
+            )
+            return
+        _activate_firebase_session(login_profile)
+        # Fire-and-forget admin notification.
+        try:
+            send_admin_notification(
+                email=email.strip(),
+                name=name.strip(),
+                reason="new RemediAX signup",
+            )
+        except Exception as exc:  # pragma: no cover - SMTP transport
+            logger.warning("Admin notification raised: %s", exc)
+        st.success(f"Welcome, {name}!")
+        st.rerun()
+
+
+def _render_premium_request_form() -> None:
+    """Inline form for basic users to request premium access."""
+    with st.form("fb-premium-form"):
+        st.caption(
+            "Tell us a bit about your use case. We'll review and respond "
+            "to the email on your account."
+        )
+        default_email = st.session_state.get("user_email") or ""
+        default_name = st.session_state.get("user_name") or ""
+        name = st.text_input("Name", value=default_name, key="prem-name")
+        email = st.text_input("Email", value=default_email, key="prem-email")
+        reason = st.text_area(
+            "Why do you need premium access?",
+            key="prem-reason",
+            placeholder="e.g. running garak nightly against our customer support LLM…",
+        )
+        submit = st.form_submit_button(
+            "📨 Submit request", use_container_width=True
+        )
+    if submit:
+        if not (name and email and reason):
+            st.error("Please fill in all three fields.")
+            return
+        saved = save_token_request(email.strip(), name.strip(), reason.strip())
+        try:
+            send_admin_notification(
+                email=email.strip(),
+                name=name.strip(),
+                reason=f"Premium access request: {reason.strip()}",
+                subject="[RemediAX] Premium access request",
+            )
+        except Exception as exc:  # pragma: no cover - SMTP transport
+            logger.warning("Premium notification raised: %s", exc)
+        if saved:
+            st.success("✅ Thanks — we'll be in touch shortly.")
+        else:
+            st.info(
+                "Your request was noted locally. Firebase is offline, "
+                "so we'll fall back to email."
+            )
+        st.session_state.show_premium_form = False
+
+
+def _render_admin_token_form() -> None:
+    """Existing RMX-* token login, preserved for admin access."""
+    st.caption(
+        "For admins with an RMX-* token. Regular users should sign in "
+        "above instead."
+    )
+    with st.form("admin-token-form"):
+        token_input = st.text_input(
+            "Access token",
+            type="password",
+            placeholder="RMX-...",
+            key="admin-token-input",
+        )
+        remember_me = st.checkbox(
+            "Remember me on this device",
+            value=False,
+            help=(
+                "Stores your token in the URL so you stay signed in "
+                "across page refreshes. Anyone with the URL can use the "
+                "token. Uncheck on shared screens."
+            ),
+            key="admin-token-remember",
+        )
+        submit = st.form_submit_button(
+            "🛡️ Sign in as admin", use_container_width=True
+        )
+    if submit:
+        tm = TokenManager()
+        ok, status, record = tm.validate_token(token_input, ip=_client_id())
+        if ok:
+            st.session_state.authenticated = True
+            st.session_state.token_record = record
+            st.session_state.is_admin = bool(record.get("permanent"))
+            # Admin tier is independent of Firebase user tier.
+            st.session_state.user_uid = None
+            st.session_state.user_email = None
+            st.session_state.user_name = "Admin"
+            st.session_state.user_tier = "developer"
+            st.session_state.screen = "landing"
+            if remember_me:
+                _persist_token(token_input.strip())
+            else:
+                _clear_remembered_token()
+            st.rerun()
+        elif status.startswith("locked:"):
+            st.error(f"🚫 Too many attempts. Wait {status.split(':', 1)[1]}m.")
+        elif status == "expired":
+            st.error("⏰ Token expired.")
+        elif status == "revoked":
+            st.error("❌ Token revoked.")
+        elif status.startswith("invalid:"):
+            st.error(
+                f"❌ Invalid token. {status.split(':', 1)[1]} attempts remaining."
+            )
+        else:
+            st.error(f"❌ {status}")
 
 
 def render_access() -> None:
@@ -1293,91 +1541,51 @@ def render_access() -> None:
             unsafe_allow_html=True,
         )
 
-    # ── RIGHT (40%): login card ─────────────────────────────────────
+    # ── RIGHT (45%): authentication portal ───────────────────────────
     with right_col:
         # Marker the CSS uses to find this column and apply the cyan glow.
         st.markdown('<div class="rx-login-marker"></div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="rx-login-title">🛡️ REMEDIAX</div>'
-            '<div class="rx-login-tagline">AI Security &middot; Human Control</div>',
+            '<div class="rx-login-title">🛡️ AUTHENTICATION PORTAL</div>'
+            '<div class="rx-login-tagline">AI Security &middot; Human Control</div>'
+            '<hr style="border:none;border-top:1px solid #00d4ff;'
+            'opacity:0.4;margin:6px 0 14px;">',
             unsafe_allow_html=True,
         )
 
-        with st.form("access-form"):
-            token_input = st.text_input(
-                "Access token",
-                type="password",
-                placeholder="RMX-...",
+        if not is_firebase_ready():
+            st.warning(
+                "Firebase is not configured for this deployment. "
+                "Email/password login is unavailable. Use the **Admin "
+                "token login** at the bottom to sign in with an RMX-* "
+                "token."
             )
-            remember_me = st.checkbox(
-                "Remember me on this device",
-                value=False,
-                help=(
-                    "Stores your token in the URL so you stay signed in "
-                    "across page refreshes. Anyone with the URL can use "
-                    "the token. Uncheck on shared screens."
-                ),
-            )
-            submit = st.form_submit_button(
-                "🔓 Access RemediAX", use_container_width=True
-            )
-        if submit:
-            tm = TokenManager()
-            ok, status, record = tm.validate_token(token_input, ip=_client_id())
-            if ok:
-                st.session_state.authenticated = True
-                st.session_state.token_record = record
-                st.session_state.is_admin = bool(record.get("permanent"))
-                # Authenticated wins over guest — clear the guest flag.
-                st.session_state.guest_mode = False
-                st.session_state.screen = "landing"
-                if remember_me:
-                    _persist_token(token_input.strip())
-                else:
-                    _clear_remembered_token()
-                st.rerun()
-            elif status.startswith("locked:"):
-                mins = status.split(":", 1)[1]
-                st.error(f"🚫 Too many attempts. Wait {mins}m.")
-            elif status == "expired":
-                st.error("⏰ Token expired. Request a new one.")
-            elif status == "revoked":
-                st.error("❌ Token revoked.")
-            elif status.startswith("invalid:"):
-                remaining = status.split(":", 1)[1]
-                st.error(f"❌ Invalid token. {remaining} attempts remaining.")
-            else:
-                st.error(f"❌ {status}")
 
-        # Guest divider + button
+        login_tab, signup_tab = st.tabs(["🔓 ANALYST LOGIN", "✨ NEW OPERATOR"])
+
+        with login_tab:
+            _render_login_tab()
+
+        with signup_tab:
+            _render_signup_tab()
+
+        # Premium-access request
         st.markdown(
             '<div class="rx-access-divider">──── or ────</div>',
             unsafe_allow_html=True,
         )
         if st.button(
-            "👤 Continue as Guest — 3 free scans/day",
+            "🎟️ Request Premium Access",
             use_container_width=True,
-            key="access-guest",
+            key="access-premium",
         ):
-            st.session_state.guest_mode = True
-            st.session_state.screen = "landing"
-            st.rerun()
-        st.caption(
-            "No account needed &middot; Upload your own `hitlog.jsonl` "
-            "&middot; Rate limited by IP"
-        )
+            st.session_state.show_premium_form = True
+        if st.session_state.get("show_premium_form"):
+            _render_premium_request_form()
 
-        # Footer security badges (compact, inside the login card)
-        st.markdown(
-            '<div class="rx-security-strip">'
-            '<span class="rx-sb">🔒 Zero-Trust Auth</span>'
-            '<span class="rx-sb-sep">·</span>'
-            '<span class="rx-sb">🔐 TLS Encrypted</span>'
-            '<span class="rx-sb-sep">·</span>'
-            '<span class="rx-sb">👤 Human-in-the-Loop</span>'
-            "</div>",
-            unsafe_allow_html=True,
-        )
+        # Admin token login (existing RMX- flow, kept for backwards compat)
+        with st.expander("🛡️ Admin token login"):
+            _render_admin_token_form()
 
     # ── SECTION 3 — Full-width bottom badges bar ────────────────────
     bottom_items = [
@@ -1486,21 +1694,21 @@ def render_landing() -> None:
         unsafe_allow_html=True,
     )
 
-    # Public users see their daily quota status here; token users get a
-    # subtler "unlimited" note.
+    # Tier-aware quota banner. Unlimited tiers get a subtle note; basic
+    # users see remaining / upsell.
     at_limit = False
-    if not st.session_state.authenticated:
-        remaining = _scans_remaining_today()
+    if _is_unlimited_tier():
+        st.caption("✅ Unlimited scans on this tier.")
+    else:
+        remaining = _scans_remaining_this_month()
         if remaining == 0:
             _render_quota_exceeded_message()
             at_limit = True
         else:
             st.info(
-                f"🔓 Public access — {remaining} free scan(s) remaining today. "
-                "Request full access for unlimited scanning."
+                f"🔬 Analyst tier — **{remaining}** free scan(s) remaining "
+                f"this month. Upgrade for unlimited scanning."
             )
-    else:
-        st.caption("✅ Token user — unlimited scans.")
 
     up_col, demo_col = st.columns([3, 2])
     with up_col:
@@ -1520,7 +1728,7 @@ def render_landing() -> None:
             if not _can_run_scan():
                 _render_quota_exceeded_message()
             else:
-                _consume_scan_quota()
+                _consume_scan_quota(source="upload")
                 _ingest_uploaded(uploaded)
 
     with demo_col:
@@ -1533,7 +1741,7 @@ def render_landing() -> None:
             if not _can_run_scan():
                 _render_quota_exceeded_message()
             else:
-                _consume_scan_quota()
+                _consume_scan_quota(source="demo")
                 st.session_state.findings = load_demo_findings()
                 st.session_state.screen = "summary"
                 st.rerun()
@@ -2060,6 +2268,15 @@ def main() -> None:
     )
     st.markdown(_GLOBAL_CSS, unsafe_allow_html=True)
 
+    # Initialize Firebase Admin if credentials are present in
+    # st.secrets. Idempotent — only the first successful call connects.
+    # When secrets are missing the helper logs and returns False so the
+    # UI can show a "Firebase not configured" notice instead of crashing.
+    try:
+        init_firebase(st.secrets)
+    except Exception as exc:  # pragma: no cover - defensive boundary
+        logger.warning("Firebase init raised unexpectedly: %s", exc)
+
     # First, ensure the admin token exists if the deploy provided it
     # via st.secrets. This MUST run before any auth check so a fresh
     # Streamlit Cloud instance has a usable admin login on first boot.
@@ -2072,24 +2289,17 @@ def main() -> None:
     # or we have already tried this session.
     _attempt_auto_login()
 
-    # Three tiers can use the app: authenticated token users, admins,
-    # and explicit guests. Everyone else (fresh visitor) is forced onto
-    # the access screen until they pick one path.
-    can_use_app = st.session_state.authenticated or st.session_state.guest_mode
-    if not can_use_app:
+    # Only authenticated users (Firebase or admin token) can reach the
+    # app. Everyone else is forced onto the access screen.
+    if not st.session_state.authenticated:
         st.session_state.screen = "access"
-    elif not st.session_state.authenticated and st.session_state.screen == "admin":
-        # Guests cannot reach the admin panel.
+    elif not st.session_state.get("is_admin") and st.session_state.screen == "admin":
+        # Non-admin Firebase users cannot reach the admin panel.
         st.session_state.screen = "landing"
 
-    # URL screen-persistence is for authenticated users only — guest
-    # sessions are intentionally ephemeral and reset on refresh.
+    # URL screen-persistence (?p=) for authenticated users.
     if st.session_state.authenticated:
         _sync_url_screen()
-
-    # Sidebar renders only after the user has chosen a tier. On the
-    # access screen the sidebar would be empty and confusing.
-    if can_use_app:
         render_sidebar()
 
     screen = st.session_state.screen
