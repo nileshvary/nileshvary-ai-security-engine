@@ -142,6 +142,24 @@ def _read_query_screen() -> str | None:
     return value if value in _RESTORABLE_SCREENS else None
 
 
+def _admin_login_unlocked() -> bool:
+    """True when the URL contains ``?admin=true`` — gates the admin token form.
+
+    Hides the back-door admin token expander from the public access
+    screen so casual visitors do not even see that an admin path exists.
+    Admins reach the form by visiting ``/?admin=true``.
+    """
+    try:
+        raw = st.query_params.get("admin")
+    except Exception:  # pragma: no cover - defensive
+        return False
+    if raw is None:
+        return False
+    if isinstance(raw, list):
+        raw = raw[0] if raw else None
+    return str(raw).strip().lower() == "true"
+
+
 def _sync_url_screen() -> None:
     """Mirror ``st.session_state.screen`` to ``st.query_params['p']``.
 
@@ -1594,9 +1612,12 @@ def render_access() -> None:
         if st.session_state.get("show_premium_form"):
             _render_premium_request_form()
 
-        # Admin token login (existing RMX- flow, kept for backwards compat)
-        with st.expander("🛡️ Admin token login"):
-            _render_admin_token_form()
+        # Admin token login — hidden by default. Surfaced only when the
+        # URL carries ``?admin=true`` so the public landing stays clean.
+        # Admins bookmark ``/?admin=true`` for the back-door form.
+        if _admin_login_unlocked():
+            with st.expander("🛡️ Admin token login", expanded=True):
+                _render_admin_token_form()
 
     # ── SECTION 3 — Full-width bottom badges bar ────────────────────
     bottom_items = [
