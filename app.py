@@ -12,6 +12,7 @@ CLI uses (``integration_bridge``, ``remediation_engine``, ``verifier``,
 from __future__ import annotations
 
 import hashlib
+import html as _html
 import logging
 import shutil
 import sys
@@ -969,6 +970,59 @@ def _render_quota_exceeded_message() -> None:
     )
 
 
+def _has_premium() -> bool:
+    """True when the active user has unlocked access to premium features.
+
+    Premium tier == anything in ``_UNLIMITED_TIERS`` (``premium``,
+    ``developer``) plus admin token users. Used as the gate for every
+    Security-Engineer-only feature lock.
+    """
+    return _is_unlimited_tier()
+
+
+def _render_locked_feature(
+    feature_name: str,
+    message: str,
+    *,
+    key_suffix: str = "",
+) -> None:
+    """Render the standard locked-feature card for basic-tier users.
+
+    Args:
+        feature_name: Short label shown in the card title (uppercased).
+        message: One-line explanation of what unlocking buys the user.
+        key_suffix: Unique-id suffix appended to the Streamlit widget key
+            so the CTA button doesn't collide when the same feature is
+            locked in two places on one page.
+    """
+    safe_name = _html.escape(feature_name, quote=True).upper()
+    safe_msg = _html.escape(message, quote=True)
+    st.markdown(
+        '<div style="background:#0d1117;border:1px solid #1e3a5f;'
+        'border-left:4px solid #ffaa00;border-radius:8px;'
+        'padding:14px 16px;margin:10px 0;">'
+        '<div style="color:#ffaa00;font-family:monospace;font-weight:700;'
+        'letter-spacing:0.06em;font-size:0.85rem;">'
+        f"🔒 {safe_name} &middot; "
+        '<span style="color:#8b949e;">PREMIUM</span></div>'
+        '<div style="color:#e6edf3;font-size:0.88rem;margin-top:6px;'
+        f'line-height:1.5;">{safe_msg}</div>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    cta_key = (
+        "lock-cta-"
+        + "".join(c if c.isalnum() else "-" for c in feature_name.lower())
+        + key_suffix
+    )
+    st.link_button(
+        "🎟️ Request Premium Access",
+        _REQUEST_ACCESS_MAILTO,
+        use_container_width=False,
+        key=cta_key,
+    )
+
+
 def _do_logout() -> None:
     """Shared logout handler for every tier — public, token, admin.
 
@@ -1079,35 +1133,52 @@ def render_sidebar() -> None:
 
         st.divider()
         st.markdown("**AI mode**")
-        mode = st.radio(
-            "Mode",
-            ("Basic (free)", "Enhanced (Claude)"),
-            index=1 if st.session_state.api_mode else 0,
-            label_visibility="collapsed",
-        )
-        st.session_state.api_mode = mode.startswith("Enhanced")
-
-        if st.session_state.api_mode:
-            st.markdown("**Claude API key**")
-            key_input = st.text_input(
-                "API key",
-                value=st.session_state.api_key or "",
-                type="password",
+        if not _has_premium():
+            # Lock 4. Force basic mode and hide the Claude radio + API
+            # key form. Premium upsell sits in its place.
+            st.session_state.api_mode = False
+            st.session_state.api_key = None
+            st.session_state.ai_client = None
+            _render_locked_feature(
+                "AI Enhanced mode",
+                "Upgrade for Claude-powered explanations of every finding "
+                "and richer scan summaries.",
+                key_suffix="-aimode",
+            )
+        else:
+            mode = st.radio(
+                "Mode",
+                ("Basic (free)", "Enhanced (Claude)"),
+                index=1 if st.session_state.api_mode else 0,
                 label_visibility="collapsed",
             )
-            save_col, remove_col = st.columns(2)
-            if save_col.button("💾 Save", use_container_width=True):
-                st.session_state.api_key = key_input.strip() or None
-                st.session_state.ai_client = None  # force rebuild
-                st.toast("Key saved." if st.session_state.api_key else "Key cleared.")
-            if remove_col.button("🗑️ Remove", use_container_width=True):
-                st.session_state.api_key = None
-                st.session_state.ai_client = None
-                st.toast("Key removed.")
-            st.caption(
-                "✅ Key saved" if st.session_state.api_key else "❌ No key — basic mode"
-            )
-            st.caption("Your key — you pay. Never logged or shared.")
+            st.session_state.api_mode = mode.startswith("Enhanced")
+
+            if st.session_state.api_mode:
+                st.markdown("**Claude API key**")
+                key_input = st.text_input(
+                    "API key",
+                    value=st.session_state.api_key or "",
+                    type="password",
+                    label_visibility="collapsed",
+                )
+                save_col, remove_col = st.columns(2)
+                if save_col.button("💾 Save", use_container_width=True):
+                    st.session_state.api_key = key_input.strip() or None
+                    st.session_state.ai_client = None  # force rebuild
+                    st.toast(
+                        "Key saved." if st.session_state.api_key else "Key cleared."
+                    )
+                if remove_col.button("🗑️ Remove", use_container_width=True):
+                    st.session_state.api_key = None
+                    st.session_state.ai_client = None
+                    st.toast("Key removed.")
+                st.caption(
+                    "✅ Key saved"
+                    if st.session_state.api_key
+                    else "❌ No key — basic mode"
+                )
+                st.caption("Your key — you pay. Never logged or shared.")
 
         st.divider()
         st.markdown("**Voice features**")
@@ -1125,6 +1196,35 @@ def render_sidebar() -> None:
                 ),
                 height=60,
             )
+
+        st.divider()
+        st.markdown("**Scan history**")
+        if not _has_premium():
+            _render_locked_feature(
+                "Full scan history",
+                "Upgrade to view your complete scan history with full "
+                "findings, remediation results, and verification reports.",
+                key_suffix="-history",
+            )
+        else:
+            uid = st.session_state.get("user_uid")
+            if uid:
+                from database import get_user_scans
+
+                try:
+                    scans = get_user_scans(uid, limit=5)
+                except Exception as exc:  # pragma: no cover - defensive
+                    scans = []
+                    logger.warning("Failed to load scan history: %s", exc)
+                if scans:
+                    for scan in scans:
+                        ts = str(scan.get("created_at", ""))[:16]
+                        src = scan.get("source", "?")
+                        st.caption(f"`{ts}` &middot; {src}")
+                else:
+                    st.caption("No scans yet.")
+            else:
+                st.caption("Scan history is available for Firebase-authenticated users.")
 
         st.divider()
         st.markdown("**Access**")
@@ -1744,24 +1844,33 @@ def render_landing() -> None:
 
     up_col, demo_col = st.columns([3, 2])
     with up_col:
-        st.markdown('<div class="rx-upload-frame">', unsafe_allow_html=True)
-        uploaded = st.file_uploader(
-            "garak hitlog",
-            type=("jsonl", "json"),
-            label_visibility="collapsed",
-            disabled=at_limit,
-        )
-        st.markdown("</div>", unsafe_allow_html=True)
-        if uploaded is not None and st.button(
-            "▶ Process upload",
-            use_container_width=True,
-            disabled=at_limit,
-        ):
-            if not _can_run_scan():
-                _render_quota_exceeded_message()
-            else:
-                _consume_scan_quota(source="upload")
-                _ingest_uploaded(uploaded)
+        if not _has_premium():
+            _render_locked_feature(
+                "Upload your own scan",
+                "Upgrade to Security Engineer access to upload your own "
+                "threat data (garak hitlog.jsonl / report.jsonl). Basic "
+                "tier users can run the live demo to explore the engine.",
+                key_suffix="-upload",
+            )
+        else:
+            st.markdown('<div class="rx-upload-frame">', unsafe_allow_html=True)
+            uploaded = st.file_uploader(
+                "garak hitlog",
+                type=("jsonl", "json"),
+                label_visibility="collapsed",
+                disabled=at_limit,
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+            if uploaded is not None and st.button(
+                "▶ Process upload",
+                use_container_width=True,
+                disabled=at_limit,
+            ):
+                if not _can_run_scan():
+                    _render_quota_exceeded_message()
+                else:
+                    _consume_scan_quota(source="upload")
+                    _ingest_uploaded(uploaded)
 
     with demo_col:
         if st.button(
@@ -2225,26 +2334,44 @@ def render_results() -> None:
             )
 
     st.markdown("#### 📥 Download artifacts")
-    for artifact in final_report.artifacts:
-        cols = st.columns([4, 2, 2])
-        cols[0].markdown(
-            f"📄 **{artifact.filename}** &nbsp; "
-            f'<span style="color:#8b949e;">{artifact.description}</span>',
-            unsafe_allow_html=True,
+    if not _has_premium():
+        # Lock 2 + 3 (artifact downloads + guardrails export combined).
+        # Basic users see the artifact LIST so they know what's available,
+        # but cannot download them.
+        _render_locked_feature(
+            "Artifact downloads",
+            "Upgrade to download security artifacts and export guardrail "
+            "configs — findings.json, remediation_results.json, "
+            "verification_report.json, guardrails.yaml, "
+            "patched_prompts.md, and summary.html.",
+            key_suffix="-downloads",
         )
-        cols[1].caption(f"{artifact.size_bytes:,} bytes")
-        try:
-            data = artifact.filepath.read_bytes()
-        except OSError as exc:
-            cols[2].caption(f"Missing: {exc}")
-            continue
-        cols[2].download_button(
-            "⬇ Download",
-            data=data,
-            file_name=artifact.filename,
-            key=f"dl-{artifact.filename}",
-            use_container_width=True,
-        )
+        for artifact in final_report.artifacts:
+            st.caption(
+                f"📄 {artifact.filename} &middot; {artifact.size_bytes:,} "
+                f"bytes &middot; {artifact.description}"
+            )
+    else:
+        for artifact in final_report.artifacts:
+            cols = st.columns([4, 2, 2])
+            cols[0].markdown(
+                f"📄 **{artifact.filename}** &nbsp; "
+                f'<span style="color:#8b949e;">{artifact.description}</span>',
+                unsafe_allow_html=True,
+            )
+            cols[1].caption(f"{artifact.size_bytes:,} bytes")
+            try:
+                data = artifact.filepath.read_bytes()
+            except OSError as exc:
+                cols[2].caption(f"Missing: {exc}")
+                continue
+            cols[2].download_button(
+                "⬇ Download",
+                data=data,
+                file_name=artifact.filename,
+                key=f"dl-{artifact.filename}",
+                use_container_width=True,
+            )
 
     skipped = st.session_state.skipped
     if skipped and st.session_state.get("is_admin"):
