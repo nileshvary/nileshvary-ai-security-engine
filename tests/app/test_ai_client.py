@@ -203,6 +203,132 @@ def test_explain_fix_non_log_only_strategy_uses_patch_prompt(
 
 
 # ---------------------------------------------------------------------------
+# Safety net — clarifying-question responses must never reach the user
+# ---------------------------------------------------------------------------
+
+
+_CLARIFYING_REPLIES: tuple[str, ...] = (
+    # The exact screenshot text from the bug report.
+    (
+        "I need the specific attack or vulnerability you'd like me to "
+        "address. You've provided a remediation strategy log_only with "
+        "a skipped prompt patch, but haven't specified which OWASP LLM "
+        "or Agentic vulnerability"
+    ),
+    "Could you clarify what you'd like me to explain?",
+    "Please specify the attack pattern.",
+    "I need more context to give a useful answer.",
+)
+
+
+@pytest.mark.parametrize("reply", _CLARIFYING_REPLIES)
+def test_log_only_clarifying_reply_is_replaced_with_spec_fallback(
+    ai_client: RemediAXAI, reply: str
+) -> None:
+    """Every clarifying-question response on LOG_ONLY swaps to spec fallback."""
+    finding = make_finding("LLM06")  # LOG_ONLY by default
+    result_obj = make_remediation_result("LLM06")
+    assert str(result_obj.strategy) == "log_only"
+
+    ai_client.client.messages.create.return_value = _fake_anthropic_response(reply)
+    out = ai_client.explain_fix(result_obj, finding=finding)
+
+    # The clarifying text must NEVER reach the caller.
+    assert out is not None
+    assert "I need" not in out
+    assert "clarify" not in out.lower()
+    assert "haven't specified" not in out.lower()
+    # And the spec-mandated fallback IS what's returned.
+    assert "To prevent this Excessive Agency attack" in out
+    assert "input guardrails" in out
+    assert "LLM gateway layer" in out
+    assert "Monitor for similar extraction attempts" in out
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_name"),
+    [
+        ("LLM01", "Prompt Injection"),
+        ("LLM02", "Sensitive Information Disclosure"),
+        ("LLM03", "Supply Chain"),
+        ("LLM04", "Data and Model Poisoning"),
+        ("LLM05", "Improper Output Handling"),
+        ("LLM06", "Excessive Agency"),
+        ("LLM07", "System Prompt Leakage"),
+        ("LLM08", "Vector and Embedding Weaknesses"),
+        ("LLM09", "Misinformation"),
+        ("LLM10", "Unbounded Consumption"),
+    ],
+)
+def test_log_only_fallback_substitutes_category_name_for_every_code(
+    ai_client: RemediAXAI, code: str, expected_name: str
+) -> None:
+    """The fallback substitutes the SHORT name — not the LLMxx code + parens.
+
+    The finding's category drives the fallback name; pairing it with
+    any LOG_ONLY result (LLM03 here, which defaults to LOG_ONLY in
+    the fixtures) gives us a clean LOG_ONLY path for every code
+    without needing to mutate a frozen result dataclass.
+    """
+    finding = make_finding(code)
+    result_obj = make_remediation_result("LLM03")  # LOG_ONLY by default
+    assert str(result_obj.strategy) == "log_only"
+
+    ai_client.client.messages.create.return_value = _fake_anthropic_response(
+        "I need more info please."
+    )
+    out = ai_client.explain_fix(result_obj, finding=finding)
+    assert out is not None
+    assert f"To prevent this {expected_name} attack" in out
+    # The code-with-parens form ("LLM06 (Excessive Agency)") is NOT used.
+    assert f"{code} ({expected_name})" not in out
+
+
+def test_non_log_only_clarifying_reply_returns_none_for_caller_fallback(
+    ai_client: RemediAXAI,
+) -> None:
+    """HARDEN / SANITIZE / etc clarifying responses fall through to None."""
+    finding = make_finding("LLM01")
+    result_obj = make_remediation_result("LLM01")  # HARDEN
+    ai_client.client.messages.create.return_value = _fake_anthropic_response(
+        "I need to know which specific patch to explain."
+    )
+    out = ai_client.explain_fix(result_obj, finding=finding)
+    # Caller (`finding_card.py`) chains `or content['fix_explanation']`,
+    # so returning None means the user sees the pre-written OWASP text.
+    assert out is None
+
+
+def test_legitimate_response_passes_through_unchanged(
+    ai_client: RemediAXAI,
+) -> None:
+    """A normal Claude response that doesn't trigger markers reaches the user."""
+    finding = make_finding("LLM06")
+    result_obj = make_remediation_result("LLM06")  # LOG_ONLY
+    legit = (
+        "Block prompts containing tool-invocation phrases at the "
+        "gateway; sandbox any tool call requests before execution."
+    )
+    ai_client.client.messages.create.return_value = _fake_anthropic_response(legit)
+    out = ai_client.explain_fix(result_obj, finding=finding)
+    assert out == legit
+
+
+def test_safety_check_is_case_insensitive(ai_client: RemediAXAI) -> None:
+    """Capitalized clarifying questions still get caught."""
+    finding = make_finding("LLM06")
+    result_obj = make_remediation_result("LLM06")
+    ai_client.client.messages.create.return_value = _fake_anthropic_response(
+        "CLARIFY please — Which OWASP category?"
+    )
+    out = ai_client.explain_fix(result_obj, finding=finding)
+    assert out is not None
+    assert "CLARIFY" not in out
+    assert "Which OWASP" not in out
+    assert "To prevent this Excessive Agency attack" in out
+
+
+# ---------------------------------------------------------------------------
 # generate_guardrail — regex-only spec prompt
 # ---------------------------------------------------------------------------
 

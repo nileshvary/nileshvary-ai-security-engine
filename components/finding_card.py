@@ -336,11 +336,17 @@ def render_active_finding(
                 )
 
     # Wide AI explanation blocks.
+    # ``finding`` is passed to BOTH AI calls so Claude has the actual
+    # attack context. For ``explain_fix`` this is what stops Claude
+    # asking clarifying questions on LOG_ONLY findings — without the
+    # finding the prompt has nothing concrete to anchor to.
     danger_text = (
         ai_client.explain_finding(finding) if ai_client is not None else None
     ) or content["danger_explanation"]
     fix_text = (
-        ai_client.explain_fix(remediation_result) if ai_client is not None else None
+        ai_client.explain_fix(remediation_result, finding=finding)
+        if ai_client is not None
+        else None
     ) or content["fix_explanation"]
 
     st.markdown(

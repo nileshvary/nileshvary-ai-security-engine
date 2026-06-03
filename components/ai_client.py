@@ -53,6 +53,59 @@ def _owasp_category_name(code: str) -> str:
     return f"{code} ({entry.name})"
 
 
+def _owasp_short_name(code: str) -> str:
+    """Bare human-readable name (no code prefix) for use in fallback text.
+
+    Used by the LOG_ONLY clarifying-question fallback so the
+    sentence reads naturally — ``"To prevent this Prompt Injection
+    attack..."`` rather than ``"To prevent this LLM01 (Prompt
+    Injection) attack..."``.
+    """
+    entry = LLM_TOP_10.get(code)
+    if entry is None:
+        return code
+    return entry.name
+
+
+# Phrases that indicate Claude is asking for clarification instead
+# of producing the requested explanation. Case-insensitive substring
+# match — if any of these appear in a fix-explanation response we
+# treat it as a failed call and fall back to pre-written content so
+# the user never sees a clarifying question.
+_CLARIFYING_QUESTION_MARKERS: tuple[str, ...] = (
+    "i need",
+    "clarify",
+    "specify",
+    "which owasp",
+    "haven't specified",
+    "could you",
+)
+
+
+def _looks_like_clarifying_question(text: str) -> bool:
+    """True when ``text`` reads like Claude asking what to explain."""
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(marker in lowered for marker in _CLARIFYING_QUESTION_MARKERS)
+
+
+def _logonly_fallback_text(category_name: str) -> str:
+    """Spec-mandated fallback shown when Claude punts on a LOG_ONLY finding.
+
+    Generic but actionable — tells the operator where and how to add
+    a guardrail without pretending to know specifics Claude couldn't
+    derive. ``category_name`` is the bare short name (e.g.
+    ``"Excessive Agency"``).
+    """
+    return (
+        f"To prevent this {category_name} attack, implement input "
+        "guardrails blocking the specific attack pattern used. "
+        "Deploy at the LLM gateway layer before requests reach the "
+        "model. Monitor for similar extraction attempts in logs."
+    )
+
+
 class RemediAXAI:
     """Best-effort Claude wrapper. All methods are ``str | None``."""
 
@@ -111,8 +164,38 @@ class RemediAXAI:
         without the per-attack context.
         """
         if result.strategy == RemediationStrategy.LOG_ONLY:
-            return self._explain_log_only(result, finding)
+            response = self._explain_log_only(result, finding)
+        else:
+            response = self._explain_patch_fix(result, finding)
 
+        # Spec safety net: if Claude responded with a clarifying
+        # question instead of an explanation, never surface it to
+        # the user. For LOG_ONLY findings substitute the spec-
+        # mandated fallback (gives the operator concrete guardrail
+        # guidance). For other strategies return None so the caller
+        # falls back to OWASP_CONTENT[code]["fix_explanation"] (the
+        # same pre-written text Basic mode shows).
+        if response and _looks_like_clarifying_question(response):
+            logger.info(
+                "explain_fix: discarding Claude clarifying-question response "
+                "(strategy=%s, finding=%s)",
+                result.strategy,
+                finding.owasp_llm_category if finding is not None else "n/a",
+            )
+            if result.strategy == RemediationStrategy.LOG_ONLY:
+                code = (
+                    finding.owasp_llm_category if finding is not None else ""
+                )
+                return _logonly_fallback_text(_owasp_short_name(code))
+            return None
+        return response
+
+    def _explain_patch_fix(
+        self,
+        result: RemediationResult,
+        finding: Finding | None,
+    ) -> str | None:
+        """Why does the runtime patch block this exact attack?"""
         notes_str = " | ".join(result.notes)[:300]
         if finding is not None:
             prompt = (
