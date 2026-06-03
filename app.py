@@ -45,7 +45,7 @@ from auth.session_manager import (
 )
 from auth.token_manager import TokenManager
 from components.ai_client import RemediAXAI
-from components.api_key_url import decode_api_key, encode_api_key
+from components.api_key_url import decrypt_api_key, encrypt_api_key
 from components.finding_card import (
     render_finding,
     render_patch_panel,
@@ -372,30 +372,67 @@ def _attempt_auto_login() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Claude API key remember-me — base64 in ``?ak=``
+# Claude API key remember-me — Fernet-encrypted in ``?ak=``
 # ---------------------------------------------------------------------------
 #
-# SECURITY: this persists an Anthropic API key in the URL. The
-# encoding is URL-safe base64 — obfuscation only, NOT encryption.
-# Anyone who can read the URL (browser history, server logs, HTTP
-# Referer headers, copy-paste, screenshot, shared link) can recover
-# the raw key with a one-line decode. The "Your key never touches
-# RemediAX servers" claim on the scanner educational card is FALSE
-# while ``?ak=`` is in use — the Streamlit server logs every request
-# URL, including the query string.
+# Persists an Anthropic API key in ``?ak=`` so Enhanced mode survives
+# a refresh. The URL value is a Fernet ciphertext (AES-128-CBC + HMAC
+# under a SHA-256-derived 32-byte key). The server-side secret comes
+# from ``st.secrets["session"]["secret"]``.
 #
-# We surface a yellow warning in the sidebar whenever a key is
-# persisted so the user is reminded not to share the URL.
+# Security profile:
+#   * A leaked URL ALONE no longer reveals the API key — the
+#     attacker also needs ``[session].secret``.
+#   * Fernet's HMAC catches tampering; a flipped byte in ``?ak=``
+#     produces ``None`` on decrypt and we strip the bad param.
+#   * If the secret rotates, all previously-saved URLs become
+#     undecryptable; users see Enhanced mode silently fall back to
+#     Basic on next refresh and have to re-enter their key.
+#   * If the secret is MISSING from ``st.secrets`` we degrade to
+#     session-only behavior: the key works for this tab but does
+#     not survive a refresh, and the sidebar surfaces a warning.
+
+
+def _read_session_secret() -> str:
+    """Return ``st.secrets["session"]["secret"]`` or ``""`` if unavailable.
+
+    Falls back to the empty string for any failure mode (no secrets,
+    no ``[session]`` table, empty value, secrets module unavailable)
+    so callers can treat "no secret configured" identically to "this
+    feature is disabled".
+    """
+    try:
+        secret = st.secrets["session"]["secret"]
+    except (KeyError, TypeError, AttributeError, FileNotFoundError):
+        return ""
+    if not secret:
+        return ""
+    return str(secret).strip()
 
 
 def _persist_api_key_to_url(raw_key: str) -> None:
-    """Base64-encode ``raw_key`` and write it to ``?ak=``."""
-    encoded = encode_api_key(raw_key)
-    if not encoded:
+    """Encrypt ``raw_key`` with the session secret and write to ``?ak=``.
+
+    Silently no-ops when ``[session].secret`` is not configured. The
+    sidebar warns the user separately so the lack of persistence is
+    not invisible.
+    """
+    secret = _read_session_secret()
+    if not secret:
+        logger.warning(
+            "Claude API key URL persistence is DISABLED: "
+            "[session].secret is not set in .streamlit/secrets.toml"
+        )
+        return
+    ciphertext = encrypt_api_key(raw_key, secret=secret)
+    if not ciphertext:
         return
     try:
-        st.query_params[_API_KEY_PARAM] = encoded
-        logger.info("Claude API key persisted to ?ak= (len=%d encoded)", len(encoded))
+        st.query_params[_API_KEY_PARAM] = ciphertext
+        logger.info(
+            "Claude API key encrypted and persisted to ?ak= (ciphertext len=%d)",
+            len(ciphertext),
+        )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Failed to persist API key to URL: %s", exc)
 
@@ -411,36 +448,46 @@ def _clear_api_key_from_url() -> None:
 
 
 def _attempt_api_key_url_restore() -> None:
-    """If ``?ak=`` is present, decode and install the key into session state.
+    """If ``?ak=`` is present, decrypt and install the key into session state.
 
     Runs once per session (guarded by ``api_key_url_restore_tried``).
-    Decode failures strip the bad param so subsequent reruns don't
-    keep tripping the same failure. On success we also flip
-    ``api_mode`` to True so the user lands back in Enhanced mode
-    without having to toggle it themselves.
+    Decrypt failure (wrong/missing secret, tampered ciphertext, garbage)
+    strips the bad param so subsequent reruns do not keep tripping the
+    same failure. On success we also flip ``api_mode`` to True so the
+    user lands back in Enhanced mode without having to toggle.
     """
     if st.session_state.get("api_key_url_restore_tried"):
         return
     st.session_state.api_key_url_restore_tried = True
     if st.session_state.get("api_key"):
-        # Already restored via session state (e.g. fresh save this
-        # session). Nothing to do.
+        # Already populated by a fresh save this session. Nothing to do.
         return
-    encoded = _read_query_param(_API_KEY_PARAM)
-    if not encoded:
+    ciphertext = _read_query_param(_API_KEY_PARAM)
+    if not ciphertext:
         return
-    decoded = decode_api_key(encoded)
-    if not decoded:
-        logger.warning("?ak= decode failed; stripping invalid param")
+    secret = _read_session_secret()
+    if not secret:
+        # Leave the ciphertext in the URL — once the operator
+        # configures [session].secret the next page load will restore
+        # cleanly. Dropping it here would silently destroy data.
+        logger.info(
+            "?ak= present but [session].secret missing; skipping restore"
+        )
+        return
+    plaintext = decrypt_api_key(ciphertext, secret=secret)
+    if not plaintext:
+        logger.warning(
+            "?ak= decrypt failed (wrong secret / tampered / garbage); stripping"
+        )
         _clear_api_key_from_url()
         return
-    st.session_state.api_key = decoded
+    st.session_state.api_key = plaintext
     st.session_state.api_mode = True
     # Force the cached AI client to be rebuilt with the restored key.
     st.session_state.ai_client = None
     logger.info(
-        "Claude API key restored from ?ak= (decoded len=%d); api_mode -> True",
-        len(decoded),
+        "Claude API key restored from ?ak= (decrypted len=%d); api_mode -> True",
+        len(plaintext),
     )
 
 
@@ -1534,23 +1581,32 @@ def render_sidebar() -> None:
                 st.markdown("**Claude API key**")
                 if st.session_state.api_key:
                     # SAVED state — no input, no dots, no Save button.
-                    # The key is also persisted to ``?ak=`` so it
-                    # survives a refresh; surface the URL-leakage
-                    # caveat right next to the "active" badge so the
-                    # user is not misled about how the key is stored.
+                    # The key is also persisted (Fernet-encrypted) to
+                    # ``?ak=`` when [session].secret is configured;
+                    # surface the relevant caveat below so users know
+                    # whether a URL share would or wouldn't leak it.
                     st.markdown(
                         '<div style="color:#00ff88;font-weight:600;'
                         'margin:6px 0 2px;">✅ Claude API key active</div>',
                         unsafe_allow_html=True,
                     )
-                    st.markdown(
-                        '<div style="background:#3a2a00;border-left:3px solid '
-                        "#ffaa00;color:#ffd166;padding:6px 10px;border-radius:4px;"
-                        'margin:6px 0;font-size:0.78rem;line-height:1.35;">'
-                        "⚠️ <b>API key visible in URL</b> — do not share "
-                        "this browser URL with others.</div>",
-                        unsafe_allow_html=True,
-                    )
+                    if _read_session_secret():
+                        st.caption(
+                            "🔒 Encrypted with the server secret before being "
+                            "placed in your URL. A leaked URL alone does not "
+                            "expose your key."
+                        )
+                    else:
+                        st.markdown(
+                            '<div style="background:#3a2a00;border-left:3px solid '
+                            "#ffaa00;color:#ffd166;padding:6px 10px;border-radius:4px;"
+                            'margin:6px 0;font-size:0.78rem;line-height:1.35;">'
+                            "⚠️ <b>Key not persisted across refresh.</b> Set "
+                            "<code>[session].secret</code> in <code>.streamlit/"
+                            "secrets.toml</code> to enable encrypted URL "
+                            "persistence.</div>",
+                            unsafe_allow_html=True,
+                        )
                     if st.button(
                         "🗑️ Remove key",
                         use_container_width=True,
@@ -3392,9 +3448,11 @@ def _render_diy_commands_tab() -> None:
         ("orange", "HOW LONG DOES IT TAKE?",
          "Quick scan: 5–10 minutes. Full scan: 30–60 minutes. Depends on "
          "the number of probes and API response speed."),
-        ("green", "IS MY API KEY SAFE?",
-         "Your API key never touches RemediAX servers. Garak runs entirely "
-         "on your local machine. We only see the results."),
+        ("green", "WHAT TRAVELS WHERE",
+         "Garak runs on your local machine — only the parsed scan "
+         "results are uploaded to RemediAX. Any Claude API key you "
+         "save for Enhanced Mode is encrypted with a server-side "
+         "secret before being stored in your browser URL."),
         ("red", "WHAT ATTACKS ARE TESTED?",
          "DAN jailbreaks, prompt injection, data exfiltration, encoding "
          "attacks, supply chain, and 50+ more probe types."),
