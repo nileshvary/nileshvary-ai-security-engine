@@ -2453,7 +2453,21 @@ _TARGET_PROVIDERS: dict[str, list[str]] = {
         "Custom REST",
     ],
     "REST API Endpoint": ["Generic REST API"],
-    "Chatbot Application": ["Web chatbot", "Slack bot", "Discord bot"],
+    "Chatbot Application": [
+        "Web Chatbot (custom built)",
+        "Slack Bot",
+        "Discord Bot",
+        "Microsoft Teams Bot",
+        "WhatsApp Bot",
+        "Telegram Bot",
+        "Intercom",
+        "Zendesk",
+        "Salesforce Einstein Bot",
+        "HubSpot Chatbot",
+        "Drift",
+        "LiveChat",
+        "Custom REST API endpoint",
+    ],
     "Custom Python Function": ["Python function wrapper"],
 }
 
@@ -2605,6 +2619,11 @@ def render_scanner() -> None:
         key=f"scanner-provider-{target}",
         label_visibility="collapsed",
     )
+    if target == "Chatbot Application":
+        st.caption(
+            "Don't see your platform? Select **Custom REST API endpoint** — "
+            "works for any chatbot that accepts text via HTTP."
+        )
 
     # ── STEP 3 — Probes ─────────────────────────────────────────────
     st.markdown(
