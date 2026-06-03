@@ -2805,6 +2805,7 @@ def render_review() -> None:
     ai_client = _get_ai_client()
     render_finding(finding, rem_result, ver_result, ai_client)
 
+    # VOICE IS FREE - NO API CALLS EVER
     # 🔊 Listen — always rendered. Clicking it reads the pre-written
     # finding script (number, category + severity, why dangerous, why
     # fix works) via the browser's Web Speech API. Content comes from
@@ -2812,6 +2813,12 @@ def render_review() -> None:
     # mode and costs nothing. We don't gate on tts_enabled here: the
     # sidebar toggle controls auto-emit elsewhere; the per-finding
     # Listen button is user-initiated and always available.
+    #
+    # IMPORTANT: do NOT pass ``ai_client`` to this call — TTS must
+    # remain claudeless. The widget reads OWASP_CONTENT only. Any
+    # Claude costs you're seeing on the review screen come from
+    # ``render_finding`` above (the on-screen explanation cards),
+    # NOT from this Listen button.
     render_listen_widget(finding, idx, total)
 
     is_esc = finding.owasp_llm_category in ESCALATION_CATEGORIES

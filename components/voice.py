@@ -1,5 +1,20 @@
 """Browser-side Web Speech API wrappers (TTS + STT).
 
+# VOICE IS FREE - NO API CALLS EVER
+
+This module is required to be Claude-free. It must not import or
+reference ``components.ai_client``, ``anthropic``, ``openai``, or any
+other LLM/transcription network client. All speech synthesis is
+performed by the browser via ``window.speechSynthesis``; all speech
+recognition by ``window.SpeechRecognition``. Content for finding
+read-aloud comes from the pre-written ``OWASP_CONTENT`` dictionary,
+NOT from any AI model.
+
+The regression test ``tests/app/test_voice.py::
+test_voice_module_has_zero_ai_imports`` enforces this contract and
+will fail CI if anyone introduces a Claude / OpenAI / Anthropic
+import in this module.
+
 Returns one HTML/JS blob to embed via ``st.components.v1.html``. The JS
 itself feature-detects ``window.speechSynthesis`` and
 ``window.webkitSpeechRecognition``; on browsers without support, the
@@ -50,6 +65,7 @@ def get_voice_js(
     *,
     manual_listen_button: bool = False,
 ) -> str:
+    # VOICE IS FREE - NO API CALLS EVER
     """Build a self-contained HTML+JS blob for TTS and (optional) STT.
 
     Args:
@@ -206,6 +222,7 @@ def build_finding_speech(
     idx: int,
     total: int,
 ) -> str:
+    # VOICE IS FREE - NO API CALLS EVER
     """Return the pre-written TTS script for one finding.
 
     Pulled entirely from ``components.owasp_content.OWASP_CONTENT`` so

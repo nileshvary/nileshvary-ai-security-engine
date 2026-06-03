@@ -1,6 +1,18 @@
-"""Tests for the TTS Listen-button speech builder + voice JS rendering."""
+"""Tests for the TTS Listen-button speech builder + voice JS rendering.
+
+# VOICE IS FREE - NO API CALLS EVER
+
+The ``test_voice_module_has_zero_ai_imports`` and
+``test_render_listen_widget_uses_only_voice_module`` tests in this
+file are regression guards: if anyone ever introduces a Claude /
+OpenAI / Anthropic call into the voice path, CI fails immediately.
+"""
 
 from __future__ import annotations
+
+import ast
+import inspect
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +20,135 @@ from components.owasp_content import OWASP_CONTENT
 from components.voice import build_finding_speech, get_voice_js
 
 from tests.remediation_engine.fixtures.sample_findings import make_finding
+
+
+# Modules and symbols a voice file must NEVER reach for. Add to this
+# list if new LLM providers join the codebase.
+_AI_DENYLIST: tuple[str, ...] = (
+    "anthropic",
+    "openai",
+    "components.ai_client",
+    "ai_client",
+    "RemediAXAI",
+)
+
+
+# ---------------------------------------------------------------------------
+# Zero-AI contract — these tests fail CI if voice ever pulls in Claude
+# ---------------------------------------------------------------------------
+
+
+def _imports_from_source(path: Path) -> list[str]:
+    """Return every ``import X`` and ``from X import Y`` target in ``path``."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                out.append(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                out.append(f"{module}.{alias.name}".strip("."))
+                if module:
+                    out.append(module)
+    return out
+
+
+def test_voice_module_has_zero_ai_imports() -> None:
+    """``components/voice.py`` MUST NOT import any Claude / OpenAI client."""
+    voice_path = Path("components/voice.py")
+    imports = _imports_from_source(voice_path)
+    leaked = [
+        symbol
+        for symbol in imports
+        for denied in _AI_DENYLIST
+        if denied in symbol
+    ]
+    assert not leaked, (
+        f"components/voice.py imported AI-client symbol(s): {leaked}. "
+        "VOICE IS FREE — NO API CALLS EVER."
+    )
+
+
+def _identifiers_used_in_function(func_source: str) -> set[str]:
+    """Return every Name / Attribute / import target inside ``func_source``.
+
+    Walks the AST so docstrings, comments, and string literals are
+    ignored — we only catch actual code references. ``inspect.getsource``
+    typically returns a body indented relative to its module; we
+    ``textwrap.dedent`` first so ``ast.parse`` doesn't choke.
+    """
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(func_source))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.name)
+                if alias.asname:
+                    names.add(alias.asname)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                names.add(node.module)
+            for alias in node.names:
+                names.add(alias.name)
+                if alias.asname:
+                    names.add(alias.asname)
+    return names
+
+
+def test_render_listen_widget_uses_only_voice_module() -> None:
+    """The Listen-button renderer must not reach for Claude.
+
+    Walks the AST of ``finding_card.py:render_listen_widget`` and
+    asserts no actual code reference touches an AI module / class.
+    Docstrings and comments are ignored — only real code identifiers
+    are checked.
+    """
+    from components.finding_card import render_listen_widget
+
+    source = inspect.getsource(render_listen_widget)
+    code_identifiers = _identifiers_used_in_function(source)
+    leaked = code_identifiers & set(_AI_DENYLIST)
+    assert not leaked, (
+        f"render_listen_widget code references AI symbol(s): {leaked}. "
+        "TTS must remain Claudeless."
+    )
+
+
+def test_build_finding_speech_does_not_call_anthropic_at_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If anthropic.Anthropic were ever constructed, this test would fail."""
+    sentinel = {"called": False}
+
+    class _ExplodingAnthropic:
+        def __init__(self, *args: object, **kwargs: object) -> None:  # noqa: D401
+            sentinel["called"] = True
+            raise AssertionError("VOICE IS FREE — anthropic.Anthropic instantiated")
+
+    # Install a fake anthropic module whose Anthropic class explodes
+    # the moment it's instantiated. If build_finding_speech ever ends
+    # up touching it (directly or through some helper), the call
+    # raises and pytest sees the failure immediately.
+    import sys
+    from types import SimpleNamespace
+
+    fake = SimpleNamespace(Anthropic=_ExplodingAnthropic)
+    monkeypatch.setitem(sys.modules, "anthropic", fake)
+
+    finding = make_finding("LLM01")
+    build_finding_speech(finding, idx=0, total=1)
+    get_voice_js("hello world", manual_listen_button=True)
+
+    assert sentinel["called"] is False
+
 
 
 # ---------------------------------------------------------------------------
