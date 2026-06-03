@@ -62,6 +62,77 @@ _RATE_LIMITS: dict[str, int] = {
 }
 
 
+# OWASP Agentic Top 10 (2026) — textual policy rules for the three
+# categories that the spec calls out explicitly. These are policies
+# rather than regex patterns: there's no single substring that
+# uniformly identifies "agent invokes a tool outside its scope",
+# so we ship a description that a policy engine or a human reviewer
+# can implement. Format mirrors the LLM rules (id / type / patterns
+# / on_match) so the YAML output is uniform.
+_ASI_INPUT_POLICIES: dict[str, dict[str, Any]] = {
+    "ASI02": {
+        "id": "asi02-tool-authorization",
+        "type": "policy",
+        "patterns": [
+            "block unauthorized tool calls",
+            "validate tool permissions before execution",
+            "require explicit tool authorization",
+        ],
+        "on_match": "block",
+    },
+    "ASI07": {
+        "id": "asi07-inter-agent-trust",
+        "type": "policy",
+        "patterns": [
+            "validate agent identity before trust",
+            "verify message signatures between agents",
+            "block unauthenticated agent commands",
+        ],
+        "on_match": "block",
+    },
+    "ASI10": {
+        "id": "asi10-behavioral-monitoring",
+        "type": "policy",
+        "patterns": [
+            "monitor agent behavior patterns",
+            "detect goal deviation from original task",
+            "block unauthorized autonomous decisions",
+        ],
+        "on_match": "block",
+    },
+}
+
+_ASI_OUTPUT_POLICIES: dict[str, dict[str, Any]] = {
+    "ASI02": {
+        "id": "asi02-tool-call-audit",
+        "type": "policy",
+        "patterns": [
+            "detect unexpected tool invocations",
+            "flag unauthorized API calls",
+        ],
+        "on_match": "flag",
+    },
+    "ASI07": {
+        "id": "asi07-cross-agent-audit",
+        "type": "policy",
+        "patterns": [
+            "detect unverified agent instructions",
+            "flag cross-agent data leakage",
+        ],
+        "on_match": "flag",
+    },
+    "ASI10": {
+        "id": "asi10-action-approval",
+        "type": "policy",
+        "patterns": [
+            "flag unexpected agent actions",
+            "require human approval for high-impact decisions",
+        ],
+        "on_match": "flag",
+    },
+}
+
+
 class GuardrailGenerator:
     """Builds a ``GuardrailConfig`` from a batch of ``Finding`` objects."""
 
@@ -92,10 +163,17 @@ class GuardrailGenerator:
             )
 
         categories = {f.owasp_llm_category for f in findings}
+        # Collect agentic codes too — the 2026 Agentic Top 10
+        # additions surface specific policy rules per category that
+        # sit alongside the LLM regex rules.
+        agentic_categories: set[str] = set()
+        for finding in findings:
+            agentic_categories.update(finding.owasp_agentic_categories)
         logger.info(
-            "Generating %s guardrail config covering categories: %s",
+            "Generating %s guardrail config covering LLM=%s agentic=%s",
             output_format,
             sorted(categories),
+            sorted(agentic_categories),
         )
 
         input_rules: list[dict[str, Any]] = []
@@ -132,7 +210,20 @@ class GuardrailGenerator:
         if "LLM10" in categories:
             rate_limits = dict(_RATE_LIMITS)
 
-        rendered = self._render(output_format, input_rules, output_rules, rate_limits, categories)
+        # Append ASI policy rules in canonical ASI01..ASI10 order so
+        # the YAML output is deterministic regardless of finding-list
+        # ordering.
+        for asi_code in sorted(agentic_categories):
+            if asi_code in _ASI_INPUT_POLICIES:
+                # Defensive copy so callers mutating the rule list
+                # can't poison module-level constants.
+                input_rules.append({**_ASI_INPUT_POLICIES[asi_code],
+                                    "patterns": list(_ASI_INPUT_POLICIES[asi_code]["patterns"])})
+            if asi_code in _ASI_OUTPUT_POLICIES:
+                output_rules.append({**_ASI_OUTPUT_POLICIES[asi_code],
+                                     "patterns": list(_ASI_OUTPUT_POLICIES[asi_code]["patterns"])})
+
+        rendered = self._render(output_format, input_rules, output_rules, rate_limits, categories, agentic_categories)
         yaml_export = yaml.safe_dump(rendered, sort_keys=False, default_flow_style=False)
 
         return GuardrailConfig(
@@ -150,14 +241,17 @@ class GuardrailGenerator:
         output_rules: list[dict[str, Any]],
         rate_limits: dict[str, Any],
         categories: set[str],
+        agentic_categories: set[str],
     ) -> dict[str, Any]:
         """Reshape the rule lists into the per-format top-level dict."""
         covered = sorted(categories)
+        covered_agentic = sorted(agentic_categories)
 
         if output_format == "portkey":
             return {
                 "version": 1,
                 "covered_owasp_categories": covered,
+                "covered_agentic_categories": covered_agentic,
                 "input_guardrails": input_rules,
                 "output_guardrails": output_rules,
                 "rate_limits": rate_limits,
@@ -198,6 +292,7 @@ class GuardrailGenerator:
             return {
                 "version": 1,
                 "covered_owasp_categories": covered,
+                "covered_agentic_categories": covered_agentic,
                 "guardrails": litellm_rules,
                 "router_settings": router_settings,
             }
@@ -205,6 +300,7 @@ class GuardrailGenerator:
         return {
             "version": 1,
             "covered_owasp_categories": covered,
+            "covered_agentic_categories": covered_agentic,
             "input_filters": input_rules,
             "output_filters": output_rules,
             "rate_limits": rate_limits,

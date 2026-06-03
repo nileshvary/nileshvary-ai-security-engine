@@ -25,6 +25,7 @@ from verifier.models import VerificationResult
 from components.ai_client import RemediAXAI
 from components.owasp_content import get as owasp_get
 from components.owasp_content import (
+    get_asi,
     get_tool_url,
     is_escalation,
     split_tool_entry,
@@ -88,10 +89,16 @@ def _status_badge(status: str) -> str:
     return _badge(status, _STATUS_COLORS.get(status, "#8b949e"), "#000000")
 
 
-def _category_header(content: dict, severity: str, strategy: str) -> str:
+def _category_header(
+    content: dict,
+    severity: str,
+    strategy: str,
+    agentic_codes: list[str] | None = None,
+) -> str:
     color = content["color"]
     icon = content["icon"]
     name = html.escape(content["name"], quote=True)
+    asi_row = _agentic_badges_row(agentic_codes or [])
     return (
         f'<div style="background:{color}22;border-left:6px solid {color};'
         f'padding:14px 18px;border-radius:6px;margin-bottom:12px;">'
@@ -99,7 +106,49 @@ def _category_header(content: dict, severity: str, strategy: str) -> str:
         f'{icon} {name}</div>'
         f'<div style="margin-top:6px;">{_severity_badge(severity)}'
         f'{_strategy_badge(strategy)}</div>'
+        f'{asi_row}'
         f"</div>"
+    )
+
+
+def _agentic_badge(code: str, name: str, color: str) -> str:
+    """Render a single OWASP Agentic Top 10 chip (code + name, colored)."""
+    safe_code = html.escape(code, quote=True)
+    safe_name = html.escape(name, quote=True)
+    return (
+        f'<span style="display:inline-flex;align-items:center;'
+        f"padding:3px 10px;border-radius:999px;font-size:0.78rem;"
+        f"font-weight:600;border:1px solid {color};"
+        f'color:{color};background:{color}11;margin:4px 6px 0 0;">'
+        f"{safe_code} &middot; {safe_name}</span>"
+    )
+
+
+def _agentic_badges_row(codes: list[str]) -> str:
+    """Render the row of ASI chips shown under the LLM category header.
+
+    Returns the empty string when there are no agentic cross-mappings
+    for this finding, so the existing layout is unchanged for the
+    common LLM-only case.
+    """
+    if not codes:
+        return ""
+    chips: list[str] = []
+    for code in codes:
+        entry = get_asi(code)
+        if entry is None:
+            # Unknown ASI code — render as a neutral chip rather
+            # than dropping so the operator can spot bad data.
+            chips.append(_agentic_badge(code, "Unknown ASI category", "#8b949e"))
+            continue
+        chips.append(_agentic_badge(code, entry["name"], entry["color"]))
+    return (
+        '<div style="margin-top:8px;display:flex;flex-wrap:wrap;'
+        'align-items:center;gap:0;font-size:0.78rem;">'
+        '<span style="color:#8b949e;text-transform:uppercase;'
+        'letter-spacing:0.06em;margin-right:8px;">Agentic Top 10:</span>'
+        + "".join(chips)
+        + "</div>"
     )
 
 
@@ -184,7 +233,12 @@ def render_active_finding(
 
     content = owasp_get(finding.owasp_llm_category)
     st.markdown(
-        _category_header(content, finding.severity, str(remediation_result.strategy)),
+        _category_header(
+            content,
+            finding.severity,
+            str(remediation_result.strategy),
+            agentic_codes=finding.owasp_agentic_categories,
+        ),
         unsafe_allow_html=True,
     )
 
@@ -317,7 +371,12 @@ def render_escalation_finding(
 
     content = owasp_get(finding.owasp_llm_category)
     st.markdown(
-        _category_header(content, finding.severity, str(remediation_result.strategy)),
+        _category_header(
+            content,
+            finding.severity,
+            str(remediation_result.strategy),
+            agentic_codes=finding.owasp_agentic_categories,
+        ),
         unsafe_allow_html=True,
     )
 

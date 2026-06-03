@@ -83,6 +83,72 @@ def test_valid_llm_categories_is_the_full_top_ten() -> None:
     }
 
 
+# ---------------------------------------------------------------------------
+# OWASP Agentic Top 10 (2026) — direct probe -> ASI mappings + merged classify
+# ---------------------------------------------------------------------------
+
+
+def test_valid_agentic_categories_is_the_full_top_ten() -> None:
+    from integration_bridge.owasp_mapper import VALID_AGENTIC_CATEGORIES
+
+    assert VALID_AGENTIC_CATEGORIES == {
+        "ASI01", "ASI02", "ASI03", "ASI04", "ASI05",
+        "ASI06", "ASI07", "ASI08", "ASI09", "ASI10",
+    }
+
+
+@pytest.mark.parametrize(
+    ("probe_name", "expected_asi"),
+    [
+        ("tool_misuse.UnauthorizedAPICall", "ASI02"),
+        ("unauthorized_tool.ShellAccess", "ASI02"),
+        ("inter_agent.SpoofedMessage", "ASI07"),
+        ("agent_communication.MissingSignature", "ASI07"),
+        ("cascading.ConfidenceCollapse", "ASI08"),
+        ("circuit_breaker.OpenStateAbuse", "ASI08"),
+        ("rogue_agent.GoalDeviation", "ASI10"),
+        ("autonomous_action.ScopeOverrun", "ASI10"),
+    ],
+)
+def test_map_probe_to_agentic_direct_patterns(
+    probe_name: str, expected_asi: str
+) -> None:
+    assert OwaspMapper.map_probe_to_agentic(probe_name) == [expected_asi]
+
+
+def test_map_probe_to_agentic_returns_empty_for_pure_llm_probe() -> None:
+    """Probes without an explicit ASI direct mapping return ``[]``."""
+    assert OwaspMapper.map_probe_to_agentic("dan.DAN_Jailbreak") == []
+
+
+def test_classify_merges_cross_map_and_direct_agentic() -> None:
+    """``tool_misuse.X`` should produce LLM06 + [ASI03 (cross-map), ASI02 (direct)]."""
+    llm_code, agentic = OwaspMapper.classify("tool_misuse.UnauthorizedAPICall")
+    assert llm_code == "LLM06"
+    # ASI03 from the LLM06 cross-map appears first; ASI02 from the
+    # direct probe pattern is appended.
+    assert agentic == ["ASI03", "ASI02"]
+
+
+def test_classify_deduplicates_when_cross_map_and_direct_overlap() -> None:
+    """If the same ASI is suggested by both sources, it appears once."""
+    # Hypothetical: cascading.X maps to LLM10 (cross-map ASI08) AND
+    # the direct pattern also yields ASI08. The merge keeps a single
+    # entry.
+    llm_code, agentic = OwaspMapper.classify("cascading.ConfidenceCollapse")
+    assert llm_code == "LLM10"
+    assert agentic == ["ASI08"]
+    # Sanity: order is preserved (cross-map first).
+    assert agentic.count("ASI08") == 1
+
+
+def test_classify_for_rogue_agent_returns_llm06_and_asi03_plus_asi10() -> None:
+    """Rogue-agent probe gets both ASI03 (privilege abuse) AND ASI10 (rogue)."""
+    llm_code, agentic = OwaspMapper.classify("rogue_agent.GoalDeviation")
+    assert llm_code == "LLM06"
+    assert agentic == ["ASI03", "ASI10"]
+
+
 def test_exact_match_wins_over_glob() -> None:
     # lmrc.QuackMedicine is exact-mapped to LLM09; without the exact entry
     # the default would apply since no `lmrc.*` glob exists.

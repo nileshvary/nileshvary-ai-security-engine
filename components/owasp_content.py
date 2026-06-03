@@ -239,6 +239,253 @@ ESCALATION_CATEGORIES: frozenset[str] = frozenset(
     {"LLM03", "LLM04", "LLM08", "LLM09"}
 )
 
+
+# ---------------------------------------------------------------------------
+# OWASP Agentic Top 10 (ASI) — 2026 taxonomy
+# ---------------------------------------------------------------------------
+#
+# Mirror of ``OWASP_CONTENT`` for the agentic side. Surfaced wherever
+# we render a finding (review screen, scan summary) AND fed into Claude
+# prompts so the model uses the right category names. Spec-mandated
+# texts for ASI02 / ASI07 / ASI10 are quoted verbatim; the rest are
+# concise summaries derived from the 2026 OWASP ASI Top 10.
+
+ASI_CONTENT: dict[str, dict[str, Any]] = {
+    "ASI01": {
+        "name": "Agent Goal Hijack",
+        "color": "#ff4444",
+        "icon": "🔴",
+        "danger_explanation": (
+            "Attackers redirect an agent's objective via prompt "
+            "injection so the agent pursues attacker-chosen goals "
+            "while believing it's still on task."
+        ),
+        "fix_explanation": (
+            "Original goal is captured at task start and re-checked "
+            "before every irreversible action. Drift triggers a halt."
+        ),
+        "input_guardrails": [
+            "anchor agent goal at task initialization",
+            "reject mid-task goal mutations from user input",
+            "verify the next planned action is consistent with the anchored goal",
+        ],
+        "output_guardrails": [
+            "flag actions that diverge from the original goal",
+            "require human re-confirmation for goal changes",
+        ],
+    },
+    "ASI02": {
+        "name": "Tool Misuse and Exploitation",
+        "color": "#ff6600",
+        "icon": "🟠",
+        "danger_explanation": (
+            "Agent uses connected tools in unsafe ways or attackers "
+            "exploit tool interfaces to gain unauthorized access or "
+            "cause harm across your entire AI infrastructure."
+        ),
+        "fix_explanation": (
+            "Tool authorization framework validates every tool call "
+            "against allowed permissions. Unauthorized tools are "
+            "blocked before execution."
+        ),
+        "input_guardrails": [
+            "block unauthorized tool calls",
+            "validate tool permissions before execution",
+            "require explicit tool authorization",
+        ],
+        "output_guardrails": [
+            "detect unexpected tool invocations",
+            "flag unauthorized API calls",
+        ],
+    },
+    "ASI03": {
+        "name": "Identity and Privilege Abuse",
+        "color": "#ffaa00",
+        "icon": "🟡",
+        "danger_explanation": (
+            "Agents abuse credentials or escalate privileges to act "
+            "outside their granted scope, exposing data and systems "
+            "the operator never authorized."
+        ),
+        "fix_explanation": (
+            "Least-privilege scoping per task plus per-call identity "
+            "rebinding stops an agent from leveraging stale or "
+            "borrowed authority."
+        ),
+        "input_guardrails": [
+            "rebind agent identity for each task",
+            "scope credentials to the minimum required permissions",
+            "reject calls that require permissions the task didn't request",
+        ],
+        "output_guardrails": [
+            "log every privileged action with the resolved identity",
+            "alert on privilege escalations not anchored in the task spec",
+        ],
+    },
+    "ASI04": {
+        "name": "Agentic Supply Chain Vulnerabilities",
+        "color": "#ffcc00",
+        "icon": "🟡",
+        "danger_explanation": (
+            "Tools, tool descriptors, or model components shipped to "
+            "your agent have been tampered with — a malicious tool "
+            "description can hijack reasoning before any user input."
+        ),
+        "fix_explanation": (
+            "Signed tool descriptors plus integrity checks on model "
+            "weights ensure only trusted components participate in "
+            "agent decisions."
+        ),
+        "input_guardrails": [
+            "verify signatures on every tool descriptor before load",
+            "pin tool/model versions per environment",
+        ],
+        "output_guardrails": [
+            "alert when an agent invokes a tool that wasn't on the verified list",
+        ],
+    },
+    "ASI05": {
+        "name": "Unexpected Code Execution",
+        "color": "#00d4ff",
+        "icon": "🔵",
+        "danger_explanation": (
+            "Agents execute code generated from attacker-controlled "
+            "input — eval / exec / shell paths that turn LLM output "
+            "into arbitrary execution."
+        ),
+        "fix_explanation": (
+            "Code-execution channels are sandboxed; only an allow-list "
+            "of pre-reviewed snippets can run, and outputs of LLM-"
+            "generated code are inspected before execution."
+        ),
+        "input_guardrails": [
+            "sandbox all agent-initiated code execution",
+            "block dynamic eval / exec on LLM-generated strings",
+        ],
+        "output_guardrails": [
+            "scan LLM-generated code for risky calls before execution",
+        ],
+    },
+    "ASI06": {
+        "name": "Memory Poisoning",
+        "color": "#0080ff",
+        "icon": "🔵",
+        "danger_explanation": (
+            "Persistent memory or RAG context is corrupted with "
+            "attacker content so later sessions inherit poisoned "
+            "instructions or facts — the agent becomes wrong on "
+            "purpose, durably."
+        ),
+        "fix_explanation": (
+            "Memory writes are versioned and signed; reads validate "
+            "provenance and reject entries from unauthorized sources."
+        ),
+        "input_guardrails": [
+            "validate provenance of every memory or RAG retrieval",
+            "reject memory writes from unauthenticated sources",
+        ],
+        "output_guardrails": [
+            "alert when a response cites poisoned memory entries",
+        ],
+    },
+    "ASI07": {
+        "name": "Insecure Inter-Agent Communication",
+        "color": "#8b00ff",
+        "icon": "🟣",
+        "danger_explanation": (
+            "Agents communicate without proper authentication "
+            "allowing attackers to inject malicious instructions "
+            "into agent-to-agent messages compromising entire agent "
+            "networks."
+        ),
+        "fix_explanation": (
+            "Inter-agent message signing ensures only verified agents "
+            "can send instructions. Unauthenticated messages are "
+            "rejected."
+        ),
+        "input_guardrails": [
+            "validate agent identity before trust",
+            "verify message signatures between agents",
+            "block unauthenticated agent commands",
+        ],
+        "output_guardrails": [
+            "detect unverified agent instructions",
+            "flag cross-agent data leakage",
+        ],
+    },
+    "ASI08": {
+        "name": "Cascading Failures",
+        "color": "#00ff88",
+        "icon": "🟢",
+        "danger_explanation": (
+            "A wrong signal in one agent propagates through a chain "
+            "of downstream agents and pipelines, amplifying the "
+            "error far beyond its origin."
+        ),
+        "fix_explanation": (
+            "Circuit breakers at agent boundaries halt propagation "
+            "when error rates or confidence drop below thresholds."
+        ),
+        "input_guardrails": [
+            "enforce confidence thresholds before consuming an upstream agent's output",
+            "rate-limit retries on error-class signals",
+        ],
+        "output_guardrails": [
+            "trip circuit breaker on sustained anomaly",
+            "alert when downstream agents are receiving low-confidence input",
+        ],
+    },
+    "ASI09": {
+        "name": "Human-Agent Trust Exploitation",
+        "color": "#ff00aa",
+        "icon": "🟣",
+        "danger_explanation": (
+            "Polished agent outputs over-influence operators, who "
+            "rubber-stamp dangerous actions because the agent's "
+            "confidence and prose feel authoritative."
+        ),
+        "fix_explanation": (
+            "Confidence + provenance are surfaced alongside every "
+            "agent recommendation, and high-impact actions require "
+            "explicit per-action approval."
+        ),
+        "input_guardrails": [
+            "surface model confidence and source citations on every recommendation",
+        ],
+        "output_guardrails": [
+            "require per-action approval for high-impact decisions",
+            "warn the operator when an agent's prose disguises uncertainty",
+        ],
+    },
+    "ASI10": {
+        "name": "Rogue Agents",
+        "color": "#ff4444",
+        "icon": "🔴",
+        "danger_explanation": (
+            "Agent deviates from intended goals and takes "
+            "unauthorized autonomous actions beyond its scope "
+            "potentially causing irreversible real-world harm."
+        ),
+        "fix_explanation": (
+            "Behavioral monitoring detects goal deviation early. "
+            "Circuit breakers halt agents that exceed authorized "
+            "scope."
+        ),
+        "input_guardrails": [
+            "monitor agent behavior patterns",
+            "detect goal deviation from original task",
+            "block unauthorized autonomous decisions",
+        ],
+        "output_guardrails": [
+            "flag unexpected agent actions",
+            "require human approval for high-impact decisions",
+        ],
+    },
+}
+
+
+VALID_AGENTIC_CATEGORIES: frozenset[str] = frozenset(ASI_CONTENT)
+
 # Canonical homepages for the tools surfaced in escalation cards.
 # Keyed by the tool *name* part of the "Name — description" strings in
 # each category's ``external_tools`` list. Tools without a confidently
@@ -297,3 +544,13 @@ def get_tool_url(name: str) -> str | None:
     ``OWASP_CONTENT[...][\"external_tools\"]``.
     """
     return _TOOL_URLS.get(name)
+
+
+def get_asi(code: str) -> dict[str, Any] | None:
+    """Return the ``ASI_CONTENT`` entry for ``code`` or ``None``.
+
+    Unlike ``get(code)`` which raises on unknown LLM codes, this
+    helper returns ``None`` so finding-card rendering can skip
+    unrecognized ASI codes without crashing the UI.
+    """
+    return ASI_CONTENT.get(code)

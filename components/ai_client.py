@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 
 from integration_bridge.models import Finding
-from integration_bridge.owasp_taxonomy import LLM_TOP_10
+from integration_bridge.owasp_taxonomy import AGENTIC_TOP_10, LLM_TOP_10
 from remediation_engine.models import RemediationResult
 
 logger = logging.getLogger(__name__)
@@ -46,10 +46,59 @@ def _owasp_category_name(code: str) -> str:
     return f"{code} ({entry.name})"
 
 
-def _attack_context_block(finding: Finding) -> str:
-    """Format the per-attack context block shared across every prompt."""
+def _agentic_category_names(codes: list[str]) -> str:
+    """Format an ASI code list as ``"ASI02 (Tool Misuse...), ASI10 (Rogue Agents)"``.
+
+    Returns the literal ``"(none)"`` when the list is empty so the
+    prompt context stays readable instead of trailing into a blank.
+    """
+    if not codes:
+        return "(none)"
+    parts: list[str] = []
+    for code in codes:
+        entry = AGENTIC_TOP_10.get(code)
+        if entry is None:
+            parts.append(code)
+        else:
+            parts.append(f"{code} ({entry.name})")
+    return ", ".join(parts)
+
+
+# Pre-rendered reference tables shared across prompts so Claude has
+# the full OWASP vocabulary (LLM Top 10 + Agentic Top 10) in scope.
+# Computed once at import time — both dicts are immutable taxonomy
+# constants, so this is safe.
+def _build_taxonomy_index() -> str:
+    llm_lines = [
+        f"  {code} = {entry.name}" for code, entry in LLM_TOP_10.items()
+    ]
+    asi_lines = [
+        f"  {code} = {entry.name}" for code, entry in AGENTIC_TOP_10.items()
+    ]
     return (
-        f"OWASP Category: {_owasp_category_name(finding.owasp_llm_category)}\n"
+        "OWASP TAXONOMY REFERENCE (use these exact codes and names):\n"
+        "LLM Top 10:\n"
+        + "\n".join(llm_lines)
+        + "\n"
+        "Agentic Top 10:\n"
+        + "\n".join(asi_lines)
+    )
+
+
+_TAXONOMY_INDEX: str = _build_taxonomy_index()
+
+
+def _attack_context_block(finding: Finding) -> str:
+    """Format the per-attack context block shared across every prompt.
+
+    Always includes both the LLM Top 10 and Agentic Top 10 attributions
+    so Claude can produce accurate per-finding analysis using the right
+    category names instead of guessing.
+    """
+    return (
+        f"OWASP LLM Category: {_owasp_category_name(finding.owasp_llm_category)}\n"
+        f"OWASP Agentic Categories: "
+        f"{_agentic_category_names(list(finding.owasp_agentic_categories))}\n"
         f"Severity (parser estimate): {finding.severity}\n"
         f"Probe: {finding.probe_name}\n"
         f"Detector: {finding.detector_name}\n"
@@ -84,6 +133,7 @@ class RemediAXAI:
         a re-statement of the category description.
         """
         prompt = (
+            f"{_TAXONOMY_INDEX}\n\n"
             "You are an LLM security expert reviewing a specific "
             "incident from a garak scan.\n\n"
             f"{_attack_context_block(finding)}\n\n"
@@ -113,6 +163,7 @@ class RemediAXAI:
             else ""
         )
         prompt = (
+            f"{_TAXONOMY_INDEX}\n\n"
             "You are an LLM security expert explaining a remediation.\n\n"
             f"{context}"
             f"Remediation strategy: {result.strategy}\n"
@@ -131,6 +182,7 @@ class RemediAXAI:
         threat model.
         """
         prompt = (
+            f"{_TAXONOMY_INDEX}\n\n"
             "You are an LLM security engineer authoring a guardrail "
             "rule for THIS specific incident.\n\n"
             f"{_attack_context_block(finding)}\n\n"
@@ -152,6 +204,7 @@ class RemediAXAI:
         per-incident facts justify a different rating and why.
         """
         prompt = (
+            f"{_TAXONOMY_INDEX}\n\n"
             "You are an LLM security analyst assigning final severity.\n\n"
             f"{_attack_context_block(finding)}\n\n"
             "In 1–2 sentences: confirm or revise the parser's "

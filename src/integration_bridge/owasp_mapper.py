@@ -51,6 +51,16 @@ _PROBE_TO_LLM: tuple[tuple[str, str], ...] = (
     ("malwaregen.*", "LLM06"),
     ("agentic.*", "LLM06"),
     ("toolaction.*", "LLM06"),
+    # Agentic-only probe families that don't have a great LLM Top 10
+    # home but DO have direct ASI attribution below. Map to LLM06
+    # so the review screen renders something coherent rather than
+    # the LLM01 default.
+    ("tool_misuse.*", "LLM06"),
+    ("unauthorized_tool.*", "LLM06"),
+    ("inter_agent.*", "LLM06"),
+    ("agent_communication.*", "LLM06"),
+    ("rogue_agent.*", "LLM06"),
+    ("autonomous_action.*", "LLM06"),
 
     # ── LLM07 — System Prompt Leakage ───────────────────────────────
     ("promptleak.*", "LLM07"),
@@ -67,6 +77,11 @@ _PROBE_TO_LLM: tuple[tuple[str, str], ...] = (
 
     # ── LLM10 — Unbounded Consumption ───────────────────────────────
     ("av_spam_scanning.*", "LLM10"),
+    # Cascading agent failures / open circuit-breaker scenarios are
+    # an availability-class concern that maps cleanly to LLM10 on the
+    # LLM side, while direct ASI08 attribution is added below.
+    ("cascading.*", "LLM10"),
+    ("circuit_breaker.*", "LLM10"),
 )
 
 _DEFAULT_LLM = "LLM01"
@@ -77,6 +92,14 @@ _DEFAULT_LLM = "LLM01"
 # can trust the parser's output to be one of these ten codes.
 VALID_LLM_CATEGORIES: frozenset[str] = frozenset(
     f"LLM{i:02d}" for i in range(1, 11)
+)
+
+# Companion validation set for the OWASP Agentic Top 10 (2026).
+# Used by downstream stages (guardrail generator, AI client) that
+# need to reject unknown ASI codes before rendering or sending to
+# Claude.
+VALID_AGENTIC_CATEGORIES: frozenset[str] = frozenset(
+    f"ASI{i:02d}" for i in range(1, 11)
 )
 
 _LLM_TO_AGENTIC: dict[str, list[str]] = {
@@ -91,6 +114,27 @@ _LLM_TO_AGENTIC: dict[str, list[str]] = {
     "LLM09": ["ASI09"],
     "LLM10": ["ASI08"],
 }
+
+
+# Direct probe -> ASI mappings for the 2026 OWASP Agentic Top 10
+# additions. These do NOT replace the cross-map above — they
+# AUGMENT it. ``classify`` merges both sources and de-duplicates
+# while preserving declaration order so the cross-map ASI appears
+# first and the direct mapping appears second.
+_PROBE_TO_AGENTIC: tuple[tuple[str, str], ...] = (
+    # ASI02 — Tool Misuse and Exploitation
+    ("tool_misuse.*", "ASI02"),
+    ("unauthorized_tool.*", "ASI02"),
+    # ASI07 — Insecure Inter-Agent Communication
+    ("inter_agent.*", "ASI07"),
+    ("agent_communication.*", "ASI07"),
+    # ASI08 — Cascading Failures
+    ("cascading.*", "ASI08"),
+    ("circuit_breaker.*", "ASI08"),
+    # ASI10 — Rogue Agents
+    ("rogue_agent.*", "ASI10"),
+    ("autonomous_action.*", "ASI10"),
+)
 
 
 class OwaspMapper:
@@ -137,16 +181,41 @@ class OwaspMapper:
         """
         return list(_LLM_TO_AGENTIC.get(llm_code, []))
 
+    @staticmethod
+    def map_probe_to_agentic(probe_name: str) -> list[str]:
+        """Return Agentic codes that match a probe via direct pattern lookup.
+
+        Independent of the LLM cross-map — these are the probes from
+        the 2026 Agentic Top 10 update that don't slot cleanly into
+        an LLM Top 10 category but DO have a clear ASI attribution.
+        Returns an empty list when no direct pattern matches.
+        """
+        matches: list[str] = []
+        for pattern, code in _PROBE_TO_AGENTIC:
+            if fnmatchcase(probe_name, pattern):
+                matches.append(code)
+        return matches
+
     @classmethod
     def classify(cls, probe_name: str) -> tuple[str, list[str]]:
-        """Return ``(llm_code, agentic_codes)`` for a probe in one call.
+        """Return ``(llm_code, merged_agentic_codes)`` for a probe.
 
-        Args:
-            probe_name: A garak probe identifier.
+        Merges two sources of ASI attribution:
 
-        Returns:
-            A two-tuple of the OWASP LLM code and the list of cross-mapped
-            OWASP Agentic codes.
+        1. Cross-map from the resolved LLM code (the historical path).
+        2. Direct probe-pattern match against ``_PROBE_TO_AGENTIC``
+           (added for the 2026 Agentic Top 10 expansion — probes like
+           ``tool_misuse.*`` get ASI02 here even when their LLM code
+           is the default).
+
+        Results are de-duplicated while preserving order so the
+        cross-map ASI appears first.
         """
         llm_code = cls.map_probe_to_llm(probe_name)
-        return llm_code, cls.map_llm_to_agentic(llm_code)
+        cross_mapped = cls.map_llm_to_agentic(llm_code)
+        direct = cls.map_probe_to_agentic(probe_name)
+        merged: list[str] = []
+        for code in (*cross_mapped, *direct):
+            if code not in merged:
+                merged.append(code)
+        return llm_code, merged
