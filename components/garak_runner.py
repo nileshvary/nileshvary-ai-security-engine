@@ -60,18 +60,40 @@ class GarakRunner:
             python_exe: Override the python interpreter used to invoke
                 ``python -m garak``. Defaults to ``sys.executable`` so
                 the child process inherits the same venv as the app.
+                If this resolves to a system Python rather than the
+                project venv, garak won't be discoverable — see
+                ``python_exe`` in the install-not-found UI for the
+                exact path being probed.
         """
         self.python_exe: str = python_exe or sys.executable
+        # Log on construction so the active interpreter is visible in
+        # boot logs. Hugely useful for diagnosing the "running on the
+        # wrong python" class of bugs (e.g. system python wrapping a
+        # venv streamlit script — sys.executable then points at the
+        # wrong interpreter and garak's never found there).
+        logger.info(
+            "GarakRunner constructed; python_exe=%s", self.python_exe
+        )
 
     # ------------------------------------------------------------------
     # Environment / discovery
     # ------------------------------------------------------------------
 
     def is_garak_installed(self) -> bool:
-        """True when ``python -m garak --version`` succeeds in the active env."""
+        """True when ``<python_exe> -m garak --version`` exits with code 0.
+
+        The interpreter probed is whatever ``self.python_exe`` resolves
+        to — by default ``sys.executable`` (the Python running this
+        Streamlit process). If you see this return False on a machine
+        where you know garak is installed, the most common cause is
+        that the running Python isn't the venv Python — confirm with
+        ``runner.python_exe``.
+        """
+        cmd = [self.python_exe, "-m", "garak", "--version"]
+        logger.info("is_garak_installed: probing %s", " ".join(cmd))
         try:
             result = subprocess.run(
-                [self.python_exe, "-m", "garak", "--version"],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=15,
@@ -88,7 +110,8 @@ class GarakRunner:
             )
         else:
             logger.info(
-                "garak not installed (rc=%d, stderr=%s)",
+                "garak not installed under %s (rc=%d, stderr=%s)",
+                self.python_exe,
                 result.returncode,
                 result.stderr.strip()[:200],
             )

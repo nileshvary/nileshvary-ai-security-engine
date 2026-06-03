@@ -3313,11 +3313,22 @@ def _render_run_scan_tab() -> None:
     installed = runner.is_garak_installed()
     if not installed:
         st.warning(
-            "🔍 garak isn't installed in this environment. Install it "
-            "with the command below and click **Refresh** to enable "
-            "Run Scan."
+            "🔍 garak isn't installed for the Python interpreter that's "
+            "running this Streamlit app. Install it for that interpreter "
+            "(NOT just `pip install garak` in a different terminal) and "
+            "click **Refresh** to enable Run Scan."
         )
-        st.code("pip install garak", language="bash")
+        # Show the exact interpreter being probed so misconfigs (e.g.
+        # system python wrapping a venv streamlit script, leaving
+        # sys.executable pointing at the wrong Python) are diagnosable
+        # from the browser without dropping to the terminal.
+        st.caption(
+            f"Currently running Python: `{runner.python_exe}`"
+        )
+        st.code(
+            f'"{runner.python_exe}" -m pip install garak',
+            language="bash",
+        )
         if st.button("🔁 Refresh once installed", key="run-refresh-garak"):
             st.rerun()
         return
