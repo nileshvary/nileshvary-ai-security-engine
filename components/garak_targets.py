@@ -104,6 +104,20 @@ _LLM_MODEL_PROVIDERS: tuple[Provider, ...] = (
         is_free=True,
     ),
     Provider(
+        label="Hugging Face OPT-125M",
+        kind="model",
+        model_type="huggingface",
+        model_name="facebook/opt-125m",
+        is_free=True,
+    ),
+    Provider(
+        label="Hugging Face DialoGPT",
+        kind="model",
+        model_type="huggingface",
+        model_name="microsoft/DialoGPT-medium",
+        is_free=True,
+    ),
+    Provider(
         label="Hugging Face GPT-J",
         kind="model",
         model_type="huggingface",
@@ -217,21 +231,24 @@ def build_command(
 ) -> tuple[str | None, str]:
     """Return ``(export_line_or_None, garak_command_string)`` for a provider.
 
-    Output format matches the product spec:
+    Output format uses garak's current ``--target_type`` /
+    ``--target_name`` flags (the deprecated ``--model_type`` /
+    ``--model_name`` aliases are avoided so users on recent garak
+    don't see deprecation warnings):
 
         For Hugging Face GPT-2 (free):
-            python -m garak --model_type huggingface --model_name gpt2 --probes dan,...
+            python -m garak --target_type huggingface --target_name gpt2 --probes dan,...
 
         For OpenAI:
             export OPENAI_API_KEY="your-key-here"
-            python -m garak --model_type openai --model_name gpt-4 --probes ...
+            python -m garak --target_type openai --target_name gpt-4 --probes ...
 
         For REST endpoint:
-            python -m garak --model_type rest --model_type rest.RestGenerator
+            python -m garak --target_type rest --target_type rest.RestGenerator
                 --uri https://... --probes ...
 
         For Custom/Other:
-            python -m garak --model_type <user_type> --model_name <user_name>
+            python -m garak --target_type <user_type> --target_name <user_name>
                 --probes ...
 
     Args:
@@ -258,19 +275,19 @@ def build_command(
     if provider.kind == "model":
         export = _export_for(provider.api_key_env) if provider.api_key_env else None
         cmd = (
-            f"python -m garak --model_type {provider.model_type} "
-            f"--model_name {provider.model_name}{probes}"
+            f"python -m garak --target_type {provider.model_type} "
+            f"--target_name {provider.model_name}{probes}"
         )
         return (export, cmd)
 
     if provider.kind == "rest":
-        # The duplicate --model_type is intentional and matches the
-        # product spec verbatim ("--model_type rest --model_type
+        # The duplicate --target_type is intentional and matches the
+        # product spec verbatim ("--target_type rest --target_type
         # rest.RestGenerator"). Garak accepts the second flag as the
         # generator class to load.
         cmd = (
-            f"python -m garak --model_type rest "
-            f"--model_type rest.RestGenerator "
+            f"python -m garak --target_type rest "
+            f"--target_type rest.RestGenerator "
             f"--uri YOUR_ENDPOINT_URL{probes}"
         )
         return (None, cmd)
@@ -285,8 +302,8 @@ def build_command(
             "# def call(prompt: str) -> str:\n"
             "#     return your_agent_or_function(prompt)\n"
             "\n"
-            f"python -m garak --model_type function "
-            f"--model_name agent_wrap.call{probes}"
+            f"python -m garak --target_type function "
+            f"--target_name agent_wrap.call{probes}"
         )
         return (None, cmd)
 
@@ -309,8 +326,8 @@ def _build_custom_command(
             env_guess = _guess_api_key_env(model_type)
             export = f'export {env_guess}="{api_key}"'
         cmd = (
-            f"python -m garak --model_type {model_type} "
-            f"--model_name {model_name}{probes}"
+            f"python -m garak --target_type {model_type} "
+            f"--target_name {model_name}{probes}"
         )
         return (export, cmd)
 
@@ -328,8 +345,8 @@ def _build_custom_command(
                 "(see garak docs for rest.RestGenerator).\n"
             )
         cmd = (
-            f"{prefix}python -m garak --model_type rest "
-            f"--model_type rest.RestGenerator "
+            f"{prefix}python -m garak --target_type rest "
+            f"--target_type rest.RestGenerator "
             f"--uri {endpoint}{probes}"
         )
         return (None, cmd)
@@ -345,8 +362,8 @@ def _build_custom_command(
             "# def call(prompt: str) -> str:\n"
             "#     return your_agent(prompt)\n"
             "\n"
-            f"python -m garak --model_type function "
-            f"--model_name {path}{probes}"
+            f"python -m garak --target_type function "
+            f"--target_name {path}{probes}"
         )
         return (None, cmd)
 

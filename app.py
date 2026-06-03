@@ -14,9 +14,11 @@ from __future__ import annotations
 import hashlib
 import html as _html
 import logging
+import os
 import shutil
 import sys
 import tempfile
+import time as _time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -53,6 +55,7 @@ from components.owasp_content import (
     ESCALATION_CATEGORIES,
     OWASP_CONTENT,
 )
+from components.garak_runner import GarakRunner
 from components.garak_targets import (
     PROVIDERS_BY_TARGET,
     TARGET_TYPES,
@@ -2928,6 +2931,22 @@ _PROBE_OPTIONS: list[tuple[str, str, bool]] = [
     ("Hallucination probes", "snowball", False),
 ]
 
+def _is_streamlit_cloud() -> bool:
+    """True when the app is running on Streamlit Community Cloud.
+
+    Multiple env vars are checked because the canonical one has
+    drifted across Streamlit Cloud releases. False on local dev and
+    on private Cloud deployments that don't set any of these.
+    """
+    if os.environ.get("STREAMLIT_SHARING_MODE"):
+        return True
+    if os.environ.get("STREAMLIT_RUNTIME_ENV", "").lower() == "cloud":
+        return True
+    if "streamlit.app" in os.environ.get("HOSTNAME", "").lower():
+        return True
+    return False
+
+
 def _scanner_estimate(probe_codes: list[str]) -> str:
     """Coarse runtime label for the Step 4 footnote."""
     if probe_codes:
@@ -2998,7 +3017,12 @@ def _collect_custom_fields(provider_kind: str, key_prefix: str) -> dict[str, str
 
 
 def render_scanner() -> None:
-    """Garak Scanner — generate ready-to-run commands for the user's target."""
+    """Garak Scanner — Run Scan (internal subprocess) + DIY Commands tabs.
+
+    The Run Scan tab is hidden on Streamlit Cloud (no subprocess /
+    pip-install permission on cloud workers). Local installs see
+    both tabs with Run Scan as the default.
+    """
     st.markdown(
         '<div class="remediax-hero"><h1>📡 GARAK THREAT SCANNER</h1>'
         '<div class="tagline">Scan any LLM or AI agent for security '
@@ -3006,6 +3030,24 @@ def render_scanner() -> None:
         unsafe_allow_html=True,
     )
 
+    if _is_streamlit_cloud():
+        st.info(
+            "💡 **Run Scan** works on local installations. Deploy "
+            "RemediAX locally or use **DIY Commands** below to scan and "
+            "upload results."
+        )
+        _render_diy_commands_tab()
+        return
+
+    run_tab, diy_tab = st.tabs(["⚡ Run Scan", "📋 DIY Commands"])
+    with run_tab:
+        _render_run_scan_tab()
+    with diy_tab:
+        _render_diy_commands_tab()
+
+
+def _render_diy_commands_tab() -> None:
+    """The 7-step wizard that emits copy-paste garak commands."""
     # ── STEP 1 — Target type ────────────────────────────────────────
     st.markdown(
         '<div class="rx-section-eyebrow">STEP 1 — SELECT TARGET TYPE</div>',
@@ -3252,6 +3294,310 @@ def render_scanner() -> None:
         f'<div class="rx-concepts-grid">{cards_html}</div>',
         unsafe_allow_html=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Run Scan tab — internal subprocess driver (local only)
+# ---------------------------------------------------------------------------
+
+
+def _render_run_scan_tab() -> None:
+    """Drive garak as a subprocess and stream progress live in the UI.
+
+    Scoped to the ``LLM Model`` target type — agent / function /
+    REST flows need wrapper code or a running endpoint and stay on
+    the DIY Commands tab where the user has full control.
+    """
+    runner = GarakRunner()
+
+    installed = runner.is_garak_installed()
+    if not installed:
+        st.warning(
+            "🔍 garak isn't installed in this environment. Install it "
+            "with the command below and click **Refresh** to enable "
+            "Run Scan."
+        )
+        st.code("pip install garak", language="bash")
+        if st.button("🔁 Refresh once installed", key="run-refresh-garak"):
+            st.rerun()
+        return
+
+    st.caption(
+        "Run a real garak scan from inside RemediAX. Progress streams "
+        "below and findings load automatically into the review pipeline."
+    )
+
+    # ── STEP 1 — Target type (fixed to LLM Model for v1) ───────────
+    st.markdown(
+        '<div class="rx-section-eyebrow">STEP 1 — TARGET TYPE</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "**LLM Model** &mdash; agents, REST endpoints, and custom "
+        "Python functions need wrapper code, use the **DIY Commands** "
+        "tab for those."
+    )
+    target = "LLM Model"
+
+    # ── STEP 2 — Provider ──────────────────────────────────────────
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+        "STEP 2 — SELECT MODEL</div>",
+        unsafe_allow_html=True,
+    )
+    providers = PROVIDERS_BY_TARGET[target]
+
+    def _radio_label(label: str) -> str:
+        p = get_provider(target, label)
+        if p is None:
+            return label
+        if p.is_free:
+            return f"{p.label}  🟢 FREE — no API key needed"
+        if p.api_key_env:
+            return f"{p.label}  (needs API key)"
+        return p.label
+
+    provider_label = st.radio(
+        "Provider",
+        [p.label for p in providers],
+        format_func=_radio_label,
+        index=0,
+        key="run-provider",
+        label_visibility="collapsed",
+    )
+    provider = get_provider(target, str(provider_label))
+    assert provider is not None
+
+    if provider.is_free:
+        st.markdown(
+            '<div style="display:inline-block;padding:4px 10px;'
+            "border-radius:4px;background:#00ff8822;color:#00ff88;"
+            'font-weight:600;font-size:0.85rem;letter-spacing:0.05em;">'
+            "FREE — No API key required</div>",
+            unsafe_allow_html=True,
+        )
+
+    # ── API key + custom inputs ────────────────────────────────────
+    api_key_value: str = ""
+    custom_target_type: str = provider.model_type
+    custom_target_name: str = provider.model_name
+    if provider.is_custom:
+        st.caption(
+            "Tell us about your target so we can build the right garak command:"
+        )
+        custom_target_type = st.text_input(
+            "Model type",
+            placeholder="e.g. huggingface, openai, replicate",
+            key="run-custom-target-type",
+        )
+        custom_target_name = st.text_input(
+            "Model name",
+            placeholder="e.g. gpt2, my-org/my-model",
+            key="run-custom-target-name",
+        )
+        api_key_value = st.text_input(
+            "API Key (optional)",
+            type="password",
+            key="run-custom-api-key",
+        )
+    elif provider.api_key_env:
+        api_key_value = st.text_input(
+            f"{provider.api_key_env}",
+            type="password",
+            key=f"run-api-key-{provider.api_key_env}",
+            help=(
+                "Exported into the garak subprocess only — never written "
+                "to disk, logs, or the command line."
+            ),
+        )
+
+    # ── STEP 3 — Probes ─────────────────────────────────────────────
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+        "STEP 3 — SELECT ATTACK PROBES</div>",
+        unsafe_allow_html=True,
+    )
+    selected_codes: list[str] = []
+    for label, code, default_checked in _PROBE_OPTIONS:
+        if st.checkbox(label, value=default_checked, key=f"run-probe-{code}"):
+            selected_codes.append(code)
+    if _has_premium():
+        if st.checkbox(
+            "All probes (full sweep)",
+            value=False,
+            key="run-probe-all",
+            help="Runs every garak probe — much slower but maximum coverage.",
+        ):
+            selected_codes = []
+    else:
+        st.caption(
+            "🔒 *All probes* (full sweep) is a Security Engineer feature."
+        )
+
+    # ── Pre-flight + run button ─────────────────────────────────────
+    target_type_value = (custom_target_type or "").strip()
+    target_name_value = (custom_target_name or "").strip()
+    needs_api_key = bool(provider.api_key_env) and not provider.is_free
+    can_run = bool(target_type_value)
+    if provider.kind != "custom_model":
+        # Catalog providers always have a target_name; custom may not.
+        can_run = can_run and bool(target_name_value)
+    if needs_api_key and not api_key_value.strip():
+        can_run = False
+
+    button_label = (
+        "▶ Run Free Scan Now"
+        if provider.is_free
+        else "▶ Run Scan with API Key"
+    )
+    if not _can_run_scan():
+        _render_quota_exceeded_message()
+        return
+
+    if not st.button(
+        button_label,
+        use_container_width=True,
+        type="primary",
+        disabled=not can_run,
+        key="run-scan-button",
+    ):
+        if needs_api_key and not api_key_value.strip():
+            st.caption(
+                f"Enter your **{provider.api_key_env}** above to enable the "
+                "scan button."
+            )
+        return
+
+    # ── Execute scan ───────────────────────────────────────────────
+    command = runner.build_command(
+        target_type=target_type_value,
+        target_name=target_name_value,
+        probes=selected_codes,
+    )
+    env_extra: dict[str, str] = {}
+    if needs_api_key and api_key_value.strip():
+        env_extra[provider.api_key_env] = api_key_value.strip()
+    elif provider.is_custom and api_key_value.strip():
+        env_extra["MODEL_API_KEY"] = api_key_value.strip()
+
+    _run_internal_garak_scan(
+        runner=runner,
+        command=command,
+        env_extra=env_extra,
+        provider=provider,
+        target_type=target_type_value,
+        target_name=target_name_value,
+        probes=selected_codes,
+    )
+
+
+def _run_internal_garak_scan(
+    *,
+    runner: GarakRunner,
+    command: list[str],
+    env_extra: dict[str, str],
+    provider: Any,
+    target_type: str,
+    target_name: str,
+    probes: list[str],
+) -> None:
+    """Execute the garak subprocess, parse results, advance to summary."""
+    pretty_cmd = " ".join(command)
+    started = _time.monotonic()
+
+    with st.status(
+        f"🔍 Running garak against {target_name or target_type}...",
+        expanded=True,
+    ) as status:
+        st.caption("Command being run (API keys redacted):")
+        st.code(pretty_cmd, language="bash")
+        log_box = st.empty()
+        log_lines: list[str] = []
+        try:
+            for line in runner.run_scan(command, env_extra=env_extra):
+                log_lines.append(line)
+                lower = line.lower()
+                if "loading" in lower:
+                    status.update(label=f"📥 Loading model: {target_name}...")
+                elif "probe" in lower:
+                    status.update(label="🔍 Running probes...")
+                elif "complete" in lower or "finished" in lower:
+                    status.update(label="⚙️ Probe complete — gathering results...")
+                log_box.code("\n".join(log_lines[-25:]) or "(waiting for output…)")
+        except Exception as exc:  # pragma: no cover - subprocess surface
+            status.update(label=f"❌ Scan failed: {exc}", state="error")
+            logger.warning("Internal garak scan raised: %s", exc)
+            return
+
+        duration = _time.monotonic() - started
+        report_path = runner.get_latest_report()
+        if report_path is None:
+            status.update(
+                label="❌ Scan finished but no .report.jsonl was produced",
+                state="error",
+            )
+            st.caption(
+                "Check the streamed log above for garak's error message."
+            )
+            return
+
+        try:
+            findings = runner.parse_report(report_path)
+        except Exception as exc:  # pragma: no cover - parser surface
+            status.update(label=f"❌ Could not parse report: {exc}", state="error")
+            logger.warning("Internal garak parse raised: %s", exc)
+            return
+
+        status.update(
+            label=(
+                f"✅ Scan complete — {len(findings)} finding(s) from "
+                f"{target_name or target_type}"
+            ),
+            state="complete",
+        )
+
+    if not findings:
+        st.warning(
+            "Scan completed but no hits were detected against this "
+            "model with the selected probes. Try different probes or a "
+            "different model."
+        )
+        return
+
+    # Drop into the RemediAX review pipeline.
+    st.session_state.findings = findings
+    st.session_state.current_upload_filename = report_path.name
+    _consume_scan_quota(source="garak-internal", findings=findings)
+
+    # Persist the rich garak-internal scan record with extra metadata
+    # so analytics can attribute hits to model / probes / duration.
+    scan_id = st.session_state.get("current_scan_id")
+    if scan_id:
+        try:
+            update_scan(
+                _storage_uid(),
+                scan_id,
+                {
+                    "source": "garak-internal",
+                    "model_name": target_name,
+                    "target_type": target_type,
+                    "probes_used": probes,
+                    "findings_count": len(findings),
+                    "scan_duration_seconds": round(duration, 2),
+                    "report_path": str(report_path),
+                },
+            )
+        except Exception as exc:  # pragma: no cover - firestore surface
+            logger.warning(
+                "Failed to enrich garak-internal scan record: %s", exc
+            )
+
+    st.success(
+        f"Real garak scan complete — {len(findings)} finding(s) from "
+        f"{target_name or target_type}."
+    )
+    st.session_state.screen = "summary"
+    st.rerun()
 
 
 # ---------------------------------------------------------------------------
