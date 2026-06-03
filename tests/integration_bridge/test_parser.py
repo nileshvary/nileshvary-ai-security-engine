@@ -60,8 +60,9 @@ def test_owasp_mappings_wired_end_to_end(sample_hitlog_path: Path) -> None:
     assert dan.owasp_agentic_categories == ["ASI01"]
 
     leak = next(f for f in findings if f.probe_name == "leakreplay.LiteratureCloze")
-    assert leak.owasp_llm_category == "LLM02"
-    assert leak.owasp_agentic_categories == []
+    # leakreplay moved from LLM02 -> LLM07 in the product-spec update.
+    assert leak.owasp_llm_category == "LLM07"
+    assert leak.owasp_agentic_categories == ["ASI01", "ASI03"]
 
     quack = next(f for f in findings if f.probe_name == "lmrc.QuackMedicine")
     assert quack.owasp_llm_category == "LLM09"
@@ -345,6 +346,140 @@ def test_legacy_hitlog_format_still_works(sample_hitlog_path: Path) -> None:
         sample_hitlog_path, attempts_per_probe={"dan.DAN_Jailbreak": 2}
     ).parse()
     assert len(findings) == 7  # same count as before the real-garak work
+
+
+# ---------------------------------------------------------------------------
+# OWASP category priority resolution — raw_data > top-level > pattern match
+# ---------------------------------------------------------------------------
+
+
+def test_inline_owasp_category_overrides_probe_pattern(tmp_path: Path) -> None:
+    """A top-level ``owasp_llm_category`` field beats the probe-name mapping."""
+    rows = [
+        {
+            "probe": "dan.DAN",  # pattern would map to LLM01
+            "detector": "d",
+            "prompt": "p",
+            "output": "o",
+            "owasp_llm_category": "LLM07",  # explicit override
+        }
+    ]
+    path = tmp_path / "h.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    findings = GarakParser(path, attempts_per_probe={"dan.DAN": 1}).parse()
+    assert findings[0].owasp_llm_category == "LLM07"
+    # And the agentic codes follow from the resolved LLM code.
+    assert findings[0].owasp_agentic_categories == ["ASI01", "ASI03"]
+
+
+def test_nested_raw_data_owasp_category_wins_over_top_level(tmp_path: Path) -> None:
+    """The deepest source (``raw_data.owasp_llm_category``) takes priority."""
+    rows = [
+        {
+            "probe": "dan.DAN",
+            "detector": "d",
+            "prompt": "p",
+            "output": "o",
+            "owasp_llm_category": "LLM05",       # second priority
+            "raw_data": {"owasp_llm_category": "LLM10"},  # highest priority
+        }
+    ]
+    path = tmp_path / "h.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    findings = GarakParser(path, attempts_per_probe={"dan.DAN": 1}).parse()
+    assert findings[0].owasp_llm_category == "LLM10"
+
+
+def test_invalid_inline_category_falls_back_to_pattern_match(tmp_path: Path) -> None:
+    """A bogus inline value must not contaminate the Finding."""
+    rows = [
+        {
+            "probe": "dan.DAN",
+            "detector": "d",
+            "prompt": "p",
+            "output": "o",
+            "owasp_llm_category": "LLM99",  # not in the Top 10
+        }
+    ]
+    path = tmp_path / "h.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    findings = GarakParser(path, attempts_per_probe={"dan.DAN": 1}).parse()
+    # Falls through to probe-name mapping → LLM01.
+    assert findings[0].owasp_llm_category == "LLM01"
+
+
+def test_case_insensitive_inline_category_is_normalized(tmp_path: Path) -> None:
+    """``llm07`` / ``LLM7`` must normalize to the canonical ``LLM07``."""
+    rows = [
+        {
+            "probe": "dan.DAN",
+            "detector": "d",
+            "prompt": "p",
+            "output": "o",
+            "owasp_llm_category": "llm07",
+        }
+    ]
+    path = tmp_path / "h.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    findings = GarakParser(path, attempts_per_probe={"dan.DAN": 1}).parse()
+    assert findings[0].owasp_llm_category == "LLM07"
+
+
+def test_integer_inline_category_is_normalized(tmp_path: Path) -> None:
+    """An int payload (``7``) maps to ``LLM07``."""
+    rows = [
+        {
+            "probe": "dan.DAN",
+            "detector": "d",
+            "prompt": "p",
+            "output": "o",
+            "owasp_llm_category": 7,
+        }
+    ]
+    path = tmp_path / "h.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    findings = GarakParser(path, attempts_per_probe={"dan.DAN": 1}).parse()
+    assert findings[0].owasp_llm_category == "LLM07"
+
+
+def test_invalid_category_emits_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    rows = [
+        {
+            "probe": "dan.DAN",
+            "detector": "d",
+            "prompt": "p",
+            "output": "o",
+            "owasp_llm_category": "LLM42",
+        }
+    ]
+    path = tmp_path / "h.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="integration_bridge.parser"):
+        GarakParser(path, attempts_per_probe={"dan.DAN": 1}).parse()
+    assert any(
+        "Ignoring invalid OWASP category" in rec.message for rec in caplog.records
+    )
+
+
+def test_no_inline_category_uses_pattern_match(tmp_path: Path) -> None:
+    """The default path with no override still works (regression guard)."""
+    rows = [
+        {
+            "probe": "leakreplay.LiteratureCloze",
+            "detector": "d",
+            "prompt": "p",
+            "output": "o",
+        }
+    ]
+    path = tmp_path / "h.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    findings = GarakParser(
+        path, attempts_per_probe={"leakreplay.LiteratureCloze": 1}
+    ).parse()
+    # leakreplay -> LLM07 under the new mapping.
+    assert findings[0].owasp_llm_category == "LLM07"
 
 
 def test_alternate_field_names_are_accepted(tmp_path: Path) -> None:

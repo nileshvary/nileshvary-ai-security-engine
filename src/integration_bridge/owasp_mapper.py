@@ -14,34 +14,70 @@ logger = logging.getLogger(__name__)
 
 
 _PROBE_TO_LLM: tuple[tuple[str, str], ...] = (
-    # Exact matches first so the broader globs below cannot shadow them.
+    # ── Exact matches FIRST (must precede any glob that would match) ──
     ("lmrc.QuackMedicine", "LLM09"),
-    # LLM01 — Prompt Injection family.
+    # atkgen specific overrides per product spec — these must appear
+    # before the broad ``atkgen.*`` glob so they win.
+    ("atkgen.ExcessiveAgency", "LLM06"),
+    ("atkgen.SupplyChain", "LLM03"),
+    ("atkgen.DataPoisoning", "LLM04"),
+    ("atkgen.VectorPoison", "LLM08"),
+    ("atkgen.TokenFlooding", "LLM10"),
+    ("atkgen.UnboundedOutput", "LLM10"),
+
+    # ── LLM01 — Prompt Injection ─────────────────────────────────────
     ("dan.*", "LLM01"),
     ("promptinject.*", "LLM01"),
     ("goodside.*", "LLM01"),
     ("encoding.*", "LLM01"),
+    ("gcg.*", "LLM01"),
     ("latentinjection.*", "LLM01"),
     ("grandma.*", "LLM01"),
+    ("knownbadsignatures.*", "LLM01"),
+    # Broad ``atkgen.*`` fallback comes AFTER the specific atkgen.X
+    # overrides above so e.g. atkgen.Tox still resolves to LLM01.
     ("atkgen.*", "LLM01"),
-    # LLM02 — Sensitive Information Disclosure family.
-    ("leakreplay.*", "LLM02"),
-    ("knownbadsignatures.*", "LLM02"),
-    # LLM05 — Improper Output Handling family.
-    ("malwaregen.*", "LLM05"),
+
+    # ── LLM03 — Supply Chain ────────────────────────────────────────
+    # (no glob — exact atkgen.SupplyChain handled above)
+
+    # ── LLM05 — Improper Output Handling ─────────────────────────────
     ("xss.*", "LLM05"),
+    ("sqli.*", "LLM05"),
+    ("markdownexfil.*", "LLM05"),
     ("exploitation.*", "LLM05"),
-    # LLM06 — Excessive Agency family.
+
+    # ── LLM06 — Excessive Agency ────────────────────────────────────
+    ("malwaregen.*", "LLM06"),
     ("agentic.*", "LLM06"),
     ("toolaction.*", "LLM06"),
-    # LLM09 — Misinformation family.
+
+    # ── LLM07 — System Prompt Leakage ───────────────────────────────
+    ("promptleak.*", "LLM07"),
+    ("leakreplay.*", "LLM07"),
+    ("systemprompt.*", "LLM07"),
+
+    # ── LLM09 — Misinformation ──────────────────────────────────────
+    ("continuation.*", "LLM09"),
+    ("realtoxicity.*", "LLM09"),
+    ("hallucination.*", "LLM09"),
+    ("packagehallucination.*", "LLM09"),
     ("misleading.*", "LLM09"),
     ("snowball.*", "LLM09"),
-    # LLM10 — Unbounded Consumption family.
+
+    # ── LLM10 — Unbounded Consumption ───────────────────────────────
     ("av_spam_scanning.*", "LLM10"),
 )
 
 _DEFAULT_LLM = "LLM01"
+
+# The complete OWASP LLM Top 10 set. ``GarakParser`` validates any
+# externally-supplied ``owasp_llm_category`` value against this set
+# and falls back to ``_DEFAULT_LLM`` for anything outside it, so we
+# can trust the parser's output to be one of these ten codes.
+VALID_LLM_CATEGORIES: frozenset[str] = frozenset(
+    f"LLM{i:02d}" for i in range(1, 11)
+)
 
 _LLM_TO_AGENTIC: dict[str, list[str]] = {
     "LLM01": ["ASI01"],

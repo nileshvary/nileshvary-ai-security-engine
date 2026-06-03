@@ -34,7 +34,10 @@ from pathlib import Path
 from typing import Any
 
 from integration_bridge.models import Finding, Severity
-from integration_bridge.owasp_mapper import OwaspMapper
+from integration_bridge.owasp_mapper import (
+    VALID_LLM_CATEGORIES,
+    OwaspMapper,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -191,8 +194,8 @@ class GarakParser:
             else:
                 severity = _severity_from_rate(hits_per_probe[probe] / attempts)
 
-            llm_code, agentic_codes = OwaspMapper.classify(probe)
             raw = row["raw_data"]
+            llm_code, agentic_codes = self._resolve_owasp_category(raw, probe)
             score = raw.get("score")
             try:
                 is_successful = score is None or float(score) >= _HIT_SCORE_THRESHOLD
@@ -374,6 +377,102 @@ class GarakParser:
         self._eval_totals[str(probe)] = max(
             self._eval_totals.get(str(probe), 0), total_int
         )
+
+    def _resolve_owasp_category(
+        self, raw: dict[str, Any], probe: str
+    ) -> tuple[str, list[str]]:
+        """Resolve the OWASP LLM code for a row, honoring inline overrides.
+
+        Priority order (first valid value wins):
+
+        1. ``raw["raw_data"]["owasp_llm_category"]`` — a nested
+           ``raw_data`` sub-object's category field (some custom
+           ingest pipelines attach this).
+        2. ``raw["owasp_llm_category"]`` — a top-level category
+           field on the JSON row itself.
+        3. ``OwaspMapper.classify(probe)`` — pattern-match the probe
+           name against the canonical mapping table.
+
+        Any explicit value that is not in ``VALID_LLM_CATEGORIES`` is
+        ignored (logged at WARNING) and we fall through to the next
+        source — and ultimately to ``LLM01`` so the parser never
+        emits a Finding with a bogus category that downstream stages
+        would have to special-case.
+
+        Returns ``(llm_code, agentic_codes)`` for direct use by the
+        Finding-construction loop.
+        """
+        for source_name, value in self._owasp_category_candidates(raw):
+            normalized = self._normalize_owasp_value(value)
+            if normalized is None:
+                continue
+            if normalized in VALID_LLM_CATEGORIES:
+                logger.debug(
+                    "OWASP category resolved from %s: %s (probe=%s)",
+                    source_name,
+                    normalized,
+                    probe,
+                )
+                return (
+                    normalized,
+                    OwaspMapper.map_llm_to_agentic(normalized),
+                )
+            logger.warning(
+                "Ignoring invalid OWASP category %r from %s on probe %s",
+                value,
+                source_name,
+                probe,
+            )
+        # Fallback — pattern-match the probe name.
+        return OwaspMapper.classify(probe)
+
+    @staticmethod
+    def _owasp_category_candidates(
+        raw: dict[str, Any],
+    ) -> list[tuple[str, Any]]:
+        """Return labeled candidate values to try, in priority order."""
+        candidates: list[tuple[str, Any]] = []
+        nested = raw.get("raw_data")
+        if isinstance(nested, dict):
+            candidates.append(
+                ("raw_data.owasp_llm_category", nested.get("owasp_llm_category"))
+            )
+        candidates.append(
+            ("top-level owasp_llm_category", raw.get("owasp_llm_category"))
+        )
+        return candidates
+
+    @staticmethod
+    def _normalize_owasp_value(value: Any) -> str | None:
+        """Coerce a candidate value into a canonical ``LLMnn`` string.
+
+        Accepts case-variant strings (``"llm01"``, ``"LLM1"``) and
+        plain integers (``7`` -> ``"LLM07"``). Returns ``None`` only
+        when the value cannot be turned into ``LLM<digits>`` form at
+        all. Out-of-range values like ``LLM42`` are returned as
+        ``"LLM42"`` so the caller can validate them against
+        ``VALID_LLM_CATEGORIES`` and log a warning for invalid input —
+        silently filtering here would hide misconfiguration.
+        """
+        if value is None:
+            return None
+        if isinstance(value, int):
+            if value < 0:
+                return None
+            return f"LLM{value:02d}"
+        if not isinstance(value, str):
+            return None
+        text = value.strip().upper()
+        if not text.startswith("LLM"):
+            return None
+        digits = text[3:]
+        if not digits.isdigit():
+            return None
+        try:
+            n = int(digits)
+        except ValueError:
+            return None
+        return f"LLM{n:02d}"
 
     def _resolve_total_attempts(
         self,
