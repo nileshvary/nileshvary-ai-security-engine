@@ -210,9 +210,12 @@ def build_finding_speech(
 
     Pulled entirely from ``components.owasp_content.OWASP_CONTENT`` so
     the same text is read in Basic mode AND Enhanced mode — no Claude
-    call, no API cost. Matches the product-spec script verbatim:
+    call, no API cost. Read order matches the product spec exactly,
+    one item per line so a screen-reader pauses naturally between
+    sections:
 
-        Finding {n} of {total}. Category: {name}. Severity: {sev}.
+        Finding {n} of {total}.
+        Category: {name}. Severity: {sev}.
         Why this is dangerous: {danger_explanation}
         Why this fix works: {fix_explanation}
 
@@ -237,9 +240,8 @@ def build_finding_speech(
     fix = (content.get("fix_explanation") or "").strip()
 
     return (
-        f"Finding {idx + 1} of {total}. "
-        f"Category: {name}. "
-        f"Severity: {finding.severity}.\n"
+        f"Finding {idx + 1} of {total}.\n"
+        f"Category: {name}. Severity: {finding.severity}.\n"
         f"Why this is dangerous: {danger}\n"
         f"Why this fix works: {fix}"
     )

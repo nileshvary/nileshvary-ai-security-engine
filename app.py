@@ -2805,11 +2805,14 @@ def render_review() -> None:
     ai_client = _get_ai_client()
     render_finding(finding, rem_result, ver_result, ai_client)
 
-    # 🔊 Listen — user-triggered TTS of the pre-written finding script
-    # (Category, Severity, Why dangerous, Why fix works) pulled from
-    # OWASP_CONTENT. Same in Basic and Enhanced mode; no API cost.
-    if st.session_state.tts_enabled:
-        render_listen_widget(finding, idx, total)
+    # 🔊 Listen — always rendered. Clicking it reads the pre-written
+    # finding script (number, category + severity, why dangerous, why
+    # fix works) via the browser's Web Speech API. Content comes from
+    # OWASP_CONTENT, so playback is identical in Basic and Enhanced
+    # mode and costs nothing. We don't gate on tts_enabled here: the
+    # sidebar toggle controls auto-emit elsewhere; the per-finding
+    # Listen button is user-initiated and always available.
+    render_listen_widget(finding, idx, total)
 
     is_esc = finding.owasp_llm_category in ESCALATION_CATEGORIES
     approve_label = "✅ Note it" if is_esc else "✅ Approve"

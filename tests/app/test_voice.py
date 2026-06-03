@@ -16,25 +16,26 @@ from tests.remediation_engine.fixtures.sample_findings import make_finding
 
 
 def test_speech_format_matches_product_spec() -> None:
+    """Four items per spec, one per line, in the documented order."""
     finding = make_finding("LLM01", severity="CRITICAL")
     speech = build_finding_speech(finding, idx=0, total=7)
 
-    # Spec opener: "Finding {n} of {total}. Category: {name}. Severity: {sev}."
-    assert speech.startswith(
-        "Finding 1 of 7. "
-        "Category: Prompt Injection. "
-        "Severity: CRITICAL."
-    )
-    # Spec sections follow on new lines:
-    assert "\nWhy this is dangerous: " in speech
-    assert "\nWhy this fix works: " in speech
+    lines = speech.split("\n")
+    # Item 1 — number on its own line.
+    assert lines[0] == "Finding 1 of 7."
+    # Item 2 — category + severity together (single line per spec).
+    assert lines[1] == "Category: Prompt Injection. Severity: CRITICAL."
+    # Item 3 — why dangerous.
+    assert lines[2].startswith("Why this is dangerous: ")
+    # Item 4 — why fix works.
+    assert lines[3].startswith("Why this fix works: ")
 
 
 def test_speech_uses_one_based_finding_number() -> None:
     """idx is zero-based but the spoken number is human-readable (1-based)."""
     finding = make_finding("LLM01")
     speech = build_finding_speech(finding, idx=4, total=10)
-    assert speech.startswith("Finding 5 of 10. ")
+    assert speech.startswith("Finding 5 of 10.\n")
 
 
 def test_speech_pulls_danger_and_fix_text_verbatim() -> None:
