@@ -41,7 +41,12 @@ import datetime as _dt
 import logging
 from typing import Any
 
-import requests
+# NOTE: ``requests`` is imported lazily inside ``login_user`` and the
+# test paths so that this module can be imported on environments where
+# the dependency chain has not yet pulled it in (e.g. mid-deploy on
+# Streamlit Cloud before firebase-admin's transitive deps land). The
+# ``requests`` package IS required at runtime for the email/password
+# sign-in REST call — it is listed explicitly in requirements.txt.
 
 logger = logging.getLogger(__name__)
 
@@ -351,14 +356,23 @@ def login_user(email: str, password: str) -> dict[str, Any]:
     if not api_key:
         raise FirebaseAuthError("Firebase web API key is missing.")
 
+    # Lazy import — keeps the module import-safe on environments where
+    # ``requests`` has not yet landed via firebase-admin's dep tree.
+    try:
+        import requests as _requests
+    except ImportError as exc:  # pragma: no cover - install regression
+        raise FirebaseAuthError(
+            f"requests package is not installed: {exc}"
+        ) from exc
+
     payload = {"email": email, "password": password, "returnSecureToken": True}
     try:
-        response = requests.post(
+        response = _requests.post(
             f"{_FIREBASE_AUTH_REST}?key={api_key}",
             json=payload,
             timeout=10,
         )
-    except requests.RequestException as exc:
+    except _requests.RequestException as exc:
         raise FirebaseAuthError(f"Network error: {exc}") from exc
 
     if response.status_code != 200:

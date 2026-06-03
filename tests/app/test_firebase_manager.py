@@ -237,7 +237,7 @@ def test_login_user_happy_path(fake_firebase: SimpleNamespace) -> None:
         "idToken": "id-token-xyz",
         "displayName": "Alice",
     }
-    with patch("database.firebase_manager.requests.post", return_value=rest_response):
+    with patch("requests.post", return_value=rest_response):
         # get_user fetches Firestore profile; mock to return a tier.
         doc = MagicMock()
         doc.exists = True
@@ -257,7 +257,7 @@ def test_login_user_bad_password(fake_firebase: SimpleNamespace) -> None:
     rest_response.json.return_value = {
         "error": {"message": "INVALID_PASSWORD"}
     }
-    with patch("database.firebase_manager.requests.post", return_value=rest_response):
+    with patch("requests.post", return_value=rest_response):
         with pytest.raises(fm.FirebaseAuthError, match="Incorrect password"):
             fm.login_user("alice@example.com", "wrong")
 
@@ -268,7 +268,7 @@ def test_login_user_unknown_email(fake_firebase: SimpleNamespace) -> None:
     rest_response.json.return_value = {
         "error": {"message": "EMAIL_NOT_FOUND"}
     }
-    with patch("database.firebase_manager.requests.post", return_value=rest_response):
+    with patch("requests.post", return_value=rest_response):
         with pytest.raises(fm.FirebaseAuthError, match="No account"):
             fm.login_user("nope@example.com", "x")
 
@@ -278,7 +278,7 @@ def test_login_user_network_error(fake_firebase: SimpleNamespace) -> None:
     import requests as real_requests
 
     with patch(
-        "database.firebase_manager.requests.post",
+        "requests.post",
         side_effect=real_requests.ConnectionError("boom"),
     ):
         with pytest.raises(fm.FirebaseAuthError, match="Network error"):
