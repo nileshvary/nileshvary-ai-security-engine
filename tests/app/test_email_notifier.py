@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from database.email_notifier import send_admin_notification
+from database.email_notifier import send_admin_notification, send_user_email
 
 
 _SECRETS = {
@@ -101,3 +101,63 @@ def test_custom_subject() -> None:
         )
     sent = smtp_mock.send_message.call_args.args[0]
     assert sent["Subject"] == "[RemediAX] Special"
+
+
+# ---------------------------------------------------------------------------
+# send_user_email — trial-token delivery to the requesting user
+# ---------------------------------------------------------------------------
+
+
+def test_send_user_email_returns_false_when_secrets_missing() -> None:
+    assert send_user_email(
+        to_email="user@example.com",
+        subject="Token",
+        body="hello",
+        secrets={},
+    ) is False
+
+
+def test_send_user_email_returns_false_when_smtp_section_partial() -> None:
+    assert send_user_email(
+        to_email="user@example.com",
+        subject="Token",
+        body="hello",
+        secrets={"smtp": {"host": "x"}},
+    ) is False
+
+
+def test_send_user_email_routes_to_recipient_not_admin() -> None:
+    smtp_mock = MagicMock()
+    smtp_cm = MagicMock()
+    smtp_cm.__enter__.return_value = smtp_mock
+    smtp_cm.__exit__.return_value = False
+    with patch("database.email_notifier.smtplib.SMTP", return_value=smtp_cm) as smtp_class:
+        result = send_user_email(
+            to_email="user@example.com",
+            subject="Your RemediAX 7-day trial token",
+            body="Hi there,\n\n    RMX-abc\n",
+            secrets=_SECRETS,
+        )
+    assert result is True
+    smtp_class.assert_called_once_with("smtp.example.com", 587, timeout=10)
+    smtp_mock.starttls.assert_called_once()
+    smtp_mock.login.assert_called_once_with("noreply@example.com", "app-pwd")
+    sent = smtp_mock.send_message.call_args.args[0]
+    assert sent["From"] == "noreply@example.com"
+    assert sent["To"] == "user@example.com"
+    assert sent["To"] != "admin@example.com"
+    assert sent["Subject"] == "Your RemediAX 7-day trial token"
+    assert "RMX-abc" in sent.get_content()
+
+
+def test_send_user_email_returns_false_on_smtp_exception() -> None:
+    with patch(
+        "database.email_notifier.smtplib.SMTP",
+        side_effect=ConnectionRefusedError("nope"),
+    ):
+        assert send_user_email(
+            to_email="user@example.com",
+            subject="Token",
+            body="x",
+            secrets=_SECRETS,
+        ) is False

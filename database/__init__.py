@@ -1,6 +1,6 @@
 """RemediAX database layer: Firebase Auth + Firestore + SMTP notifier."""
 
-from database.email_notifier import send_admin_notification
+from database.email_notifier import send_admin_notification, send_user_email
 from database.firebase_manager import (
     FirebaseAuthError,
     create_user,
@@ -34,6 +34,7 @@ __all__ = [
     "save_token_request",
     "scans_this_month",
     "send_admin_notification",
+    "send_user_email",
     "set_user_tier",
     "update_scan",
 ]

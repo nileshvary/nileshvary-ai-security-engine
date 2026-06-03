@@ -72,6 +72,7 @@ from database import (
     save_token_request,
     scans_this_month,
     send_admin_notification,
+    send_user_email,
     update_scan,
 )
 from demo_data import load_demo_findings
@@ -1549,23 +1550,64 @@ def _render_premium_request_form() -> None:
         if not (name and email and reason):
             st.error("Please fill in all three fields.")
             return
-        saved = save_token_request(email.strip(), name.strip(), reason.strip())
+        name_clean = name.strip()
+        email_clean = email.strip()
+        reason_clean = reason.strip()
+
+        # Auto-mint a 7-day trial token so the user can start using
+        # premium immediately while we review their request.
+        trial_token = TokenManager().generate_token(
+            duration_hours=24 * 7,
+            for_person=f"{name_clean} <{email_clean}>",
+        )
+
+        # Persist the request (best-effort) and notify the admin
+        # regardless of email-to-user outcome.
+        save_token_request(email_clean, name_clean, reason_clean)
         try:
             send_admin_notification(
-                email=email.strip(),
-                name=name.strip(),
-                reason=f"Premium access request: {reason.strip()}",
-                subject="[RemediAX] Premium access request",
+                email=email_clean,
+                name=name_clean,
+                reason=(
+                    f"Premium access request: {reason_clean}\n"
+                    f"Generated 7-day trial token: {trial_token}"
+                ),
+                subject="New Premium Request — RemediAX",
             )
         except Exception as exc:  # pragma: no cover - SMTP transport
-            logger.warning("Premium notification raised: %s", exc)
-        if saved:
-            st.success("✅ Thanks — we'll be in touch shortly.")
-        else:
-            st.info(
-                "Your request was noted locally. Firebase is offline, "
-                "so we'll fall back to email."
+            logger.warning("Premium admin notification raised: %s", exc)
+
+        user_body = (
+            f"Hi {name_clean},\n\n"
+            "Your 7-day RemediAX trial token:\n\n"
+            f"    {trial_token}\n\n"
+            "Paste it into the 'Admin token login' form on the access "
+            "screen to activate.\n\n"
+            "For permanent Premium access, we will review your request "
+            "and contact you.\n\n"
+            "— RemediAX Security Team\n"
+        )
+        user_email_sent = False
+        try:
+            user_email_sent = send_user_email(
+                to_email=email_clean,
+                subject="Your RemediAX 7-day trial token",
+                body=user_body,
             )
+        except Exception as exc:  # pragma: no cover - SMTP transport
+            logger.warning("User trial-token email raised: %s", exc)
+
+        if user_email_sent:
+            st.success(
+                f"✅ Your 7-day trial token has been sent to "
+                f"{email_clean}. Check your inbox!"
+            )
+        else:
+            st.warning(
+                "⚠️ We couldn't email your trial token. Copy it now — "
+                "it won't be shown again:"
+            )
+            st.code(trial_token, language=None)
         st.session_state.show_premium_form = False
 
 

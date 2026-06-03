@@ -79,6 +79,57 @@ def send_admin_notification(
     return True
 
 
+def send_user_email(
+    to_email: str,
+    subject: str,
+    body: str,
+    *,
+    secrets: Any | None = None,
+) -> bool:
+    """Send a transactional email to an arbitrary recipient.
+
+    Uses the same SMTP credentials as ``send_admin_notification`` but
+    routes the message to the caller-supplied ``to_email`` rather than
+    the admin address. Used for delivering auto-generated trial tokens
+    to premium-request submitters.
+
+    Args:
+        to_email: Recipient email address.
+        subject: Email subject line.
+        body: Plain-text body.
+        secrets: Streamlit-secrets-shaped mapping; when ``None`` the
+            function attempts to read ``st.secrets`` and falls back to
+            no-op if Streamlit isn't running.
+
+    Returns:
+        ``True`` when the email was delivered to the SMTP server,
+        ``False`` when SMTP is not configured or sending failed.
+    """
+    cfg = _load_smtp_config(secrets)
+    if cfg is None:
+        logger.info("SMTP not configured; skipping user email to %s", to_email)
+        return False
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = cfg["from_email"]
+    message["To"] = to_email
+    message.set_content(body)
+
+    try:
+        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=10) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.login(cfg["user"], cfg["password"])
+            smtp.send_message(message)
+    except Exception as exc:  # pragma: no cover - network
+        logger.warning("Failed to send user email to %s: %s", to_email, exc)
+        return False
+
+    logger.info("Sent user email to %s", to_email)
+    return True
+
+
 def _load_smtp_config(secrets: Any | None) -> dict[str, Any] | None:
     """Return a validated SMTP config dict or ``None`` when unavailable."""
     if secrets is None:
