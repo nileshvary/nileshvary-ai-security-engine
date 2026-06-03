@@ -1057,6 +1057,8 @@ def _has_premium() -> bool:
     ``developer``) plus admin token users. Used as the gate for every
     Security-Engineer-only feature lock.
     """
+    if st.session_state.get("is_admin"):
+        return True
     return _is_unlimited_tier()
 
 
@@ -3207,7 +3209,7 @@ def render_analytics() -> None:
     )
 
     history = _load_history()
-    if _has_premium():
+    if st.session_state.get("is_admin") or _has_premium():
         _render_analytics_premium(history)
     else:
         _render_analytics_basic(history)
