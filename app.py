@@ -3456,34 +3456,35 @@ def _build_owasp_csv(history: list[dict[str, Any]]) -> str:
     return "\n".join(rows) + "\n"
 
 
-def _render_no_data_state() -> None:
-    """Empty-history placeholder for new users."""
+def _render_empty_charts_placeholder() -> None:
+    """Inline 'no completed scans' placeholder for the premium chart sections.
+
+    Used in place of the trend / breakdown charts when a user (or
+    admin) has not yet run a review. Kept short and inline so the
+    Activity Overview and Upload History above it stay visible — the
+    old behavior replaced the entire dashboard, which hid the running
+    totals (even when zero) and made the page feel broken on first
+    visit.
+    """
     st.info(
-        "No scan data yet. Run your first scan to see analytics here."
+        "📊 Run your first scan to see trends here. Head to the landing "
+        "page or the Garak scanner to upload a hitlog or run the demo."
     )
-    if st.button(
-        "▶ Run Demo Scan",
-        key="analytics-run-demo",
-        type="primary",
-    ):
-        findings = load_demo_findings()
-        st.session_state.findings = findings
-        _consume_scan_quota(source="demo", findings=findings)
-        st.session_state.screen = "summary"
-        st.rerun()
 
 
 def _render_analytics_basic(
     history: list[dict[str, Any]],
     uploads: list[dict[str, Any]],
 ) -> None:
-    """Basic-tier view: activity overview + upload history + current-scan + premium pitch."""
-    metrics = _current_scan_metrics()
-    if metrics is None and not history and not uploads:
-        _render_no_data_state()
-        return
+    """Basic-tier view: always-on Activity Overview + uploads + current-scan + upsell.
 
-    # ── ACTIVITY OVERVIEW — visible to every tier ──────────────────
+    The empty-state message is gone from the top level — even brand-
+    new users see the 4 Activity metric cards with zeros so they
+    understand what the page will eventually show.
+    """
+    metrics = _current_scan_metrics()
+
+    # ── ACTIVITY OVERVIEW — always render, zeros are fine ──────────
     _render_activity_overview(history, uploads)
 
     # ── CURRENT SCAN — only when there is an in-progress scan ──────
@@ -3535,11 +3536,16 @@ def _render_analytics_premium(
     history: list[dict[str, Any]],
     uploads: list[dict[str, Any]],
 ) -> None:
-    """Premium-tier view: activity overview + upload history + full charts."""
+    """Premium-tier view: always-on Activity Overview + uploads + charts.
+
+    Brand-new premium / admin users get the same Activity Overview
+    skeleton (with zeros) as basic users instead of a top-level "no
+    data" placeholder that hid the dashboard chrome. The chart
+    sections fall back to an inline placeholder when no completed
+    scans exist, so the layout is consistent whether the user has
+    zero scans or fifty.
+    """
     completed = _completed_history(history)
-    if not completed and not uploads:
-        _render_no_data_state()
-        return
 
     # ── ACTIVITY OVERVIEW — same widget the basic tier sees ────────
     _render_activity_overview(history, uploads)
@@ -3548,11 +3554,15 @@ def _render_analytics_premium(
     _render_upload_history_table(uploads, limit=50)
 
     if not completed:
-        # No completed scans yet — uploads exist but no review done.
-        st.info(
-            "Upload data captured. Run a review to start populating "
-            "the trend charts below."
+        # Render the chart-section header so the page has a complete
+        # skeleton, then fall back to a single inline message in
+        # place of the charts themselves.
+        st.markdown(
+            '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+            "TRENDS &amp; CHARTS</div>",
+            unsafe_allow_html=True,
         )
+        _render_empty_charts_placeholder()
         return
 
     # Build common index (oldest → newest) for time-series charts.
