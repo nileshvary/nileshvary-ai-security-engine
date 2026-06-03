@@ -3306,46 +3306,55 @@ def _vuln_label_for_owasp(code: str) -> str:
 def _load_history() -> list[dict[str, Any]]:
     """Return the active user's Firestore scan history (newest first).
 
-    Admin token users see the platform-wide history (every user's
-    scans), so admin analytics reflects total platform activity rather
-    than the empty per-uid view (admins have no ``user_uid``). Regular
-    users see only their own scans. Guests fall through to the
-    ``"guest"`` storage uid so demo-only sessions still surface their
-    own runs in the dashboard.
+    Reads ``users/{_storage_uid()}/scans`` — the same path
+    ``_consume_scan_quota`` and ``_save_completed_scan_results`` write
+    to, so every tier sees exactly what their session writes:
+
+    * Firebase users → ``users/<firebase-uid>/scans``
+    * Admin-token users → ``users/admin/scans`` (literal "admin" uid)
+    * Guests → ``users/guest/scans``
+
+    Previously the admin path short-circuited to ``get_all_scans()``
+    which used a Firestore ``collection_group("scans")`` query — that
+    requires a collection-group index on ``created_at`` and fails
+    silently to ``[]`` when the index is missing. Per-uid reads need
+    no index and surface the writes immediately.
     """
-    if st.session_state.get("is_admin"):
-        try:
-            return list(get_all_scans(limit=100))
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning("Failed to load platform-wide scan history: %s", exc)
-            return []
     uid = _storage_uid()
+    logger.info("_load_history: querying users/%s/scans (limit=100)", uid)
     try:
-        return list(get_user_scans(uid, limit=100))
+        records = list(get_user_scans(uid, limit=100))
     except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("Failed to load scan history: %s", exc)
+        logger.warning(
+            "_load_history: FAILED uid=%s: %s", uid, exc
+        )
         return []
+    logger.info(
+        "_load_history: returned %d record(s) for uid=%s", len(records), uid
+    )
+    return records
 
 
 def _load_uploads() -> list[dict[str, Any]]:
     """Return the active user's upload history (newest first).
 
-    Admin → platform-wide via ``get_all_uploads``; everyone else uses
-    their per-uid subcollection (with the ``"guest"`` namespace
-    fallback for anonymous sessions).
+    Reads ``users/{_storage_uid()}/uploads``. Same per-uid strategy
+    as ``_load_history`` — no collection-group index needed, matches
+    the path ``_ingest_uploaded`` writes to.
     """
-    if st.session_state.get("is_admin"):
-        try:
-            return list(get_all_uploads(limit=100))
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning("Failed to load platform-wide uploads: %s", exc)
-            return []
     uid = _storage_uid()
+    logger.info("_load_uploads: querying users/%s/uploads (limit=100)", uid)
     try:
-        return list(get_user_uploads(uid, limit=100))
+        records = list(get_user_uploads(uid, limit=100))
     except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("Failed to load upload history: %s", exc)
+        logger.warning(
+            "_load_uploads: FAILED uid=%s: %s", uid, exc
+        )
         return []
+    logger.info(
+        "_load_uploads: returned %d record(s) for uid=%s", len(records), uid
+    )
+    return records
 
 
 def _completed_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:

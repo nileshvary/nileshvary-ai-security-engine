@@ -518,6 +518,9 @@ def update_scan(uid: str, scan_id: str, updates: dict[str, Any]) -> bool:
 def get_user_scans(uid: str, limit: int = 50) -> list[dict[str, Any]]:
     """Return the user's most recent scans, newest first."""
     if not is_firebase_ready():
+        logger.info(
+            "get_user_scans SKIPPED (Firebase not ready) uid=%s", uid
+        )
         return []
     try:
         docs = list(
@@ -530,13 +533,24 @@ def get_user_scans(uid: str, limit: int = 50) -> list[dict[str, Any]]:
             .stream()
         )
     except Exception as exc:  # pragma: no cover
-        logger.warning("Failed to list scans for %s: %s", uid, exc)
+        logger.warning(
+            "get_user_scans FAILED uid=%s path=users/%s/scans: %s",
+            uid,
+            uid,
+            exc,
+        )
         return []
     out: list[dict[str, Any]] = []
     for doc in docs:
         record = dict(doc.to_dict() or {})
         record["id"] = doc.id
         out.append(record)
+    logger.info(
+        "get_user_scans OK uid=%s path=users/%s/scans returned=%d",
+        uid,
+        uid,
+        len(out),
+    )
     return out
 
 
@@ -670,6 +684,9 @@ def save_upload(uid: str, upload_data: dict[str, Any]) -> str | None:
 def get_user_uploads(uid: str, limit: int = 10) -> list[dict[str, Any]]:
     """Return the user's most recent uploads, newest first."""
     if not is_firebase_ready():
+        logger.info(
+            "get_user_uploads SKIPPED (Firebase not ready) uid=%s", uid
+        )
         return []
     try:
         docs = list(
@@ -682,13 +699,24 @@ def get_user_uploads(uid: str, limit: int = 10) -> list[dict[str, Any]]:
             .stream()
         )
     except Exception as exc:  # pragma: no cover
-        logger.warning("Failed to list uploads for %s: %s", uid, exc)
+        logger.warning(
+            "get_user_uploads FAILED uid=%s path=users/%s/uploads: %s",
+            uid,
+            uid,
+            exc,
+        )
         return []
     out: list[dict[str, Any]] = []
     for doc in docs:
         record = dict(doc.to_dict() or {})
         record["id"] = doc.id
         out.append(record)
+    logger.info(
+        "get_user_uploads OK uid=%s path=users/%s/uploads returned=%d",
+        uid,
+        uid,
+        len(out),
+    )
     return out
 
 
