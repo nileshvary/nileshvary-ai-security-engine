@@ -18,7 +18,7 @@ import shutil
 import sys
 import tempfile
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +31,6 @@ _SRC_DIR = Path(__file__).parent / "src"
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-import extra_streamlit_components as stx
 import streamlit as st
 
 from admin.panel import render_admin_panel
@@ -41,12 +40,6 @@ from auth.session_manager import (
     is_admin,
     logout,
     reset_to_landing,
-)
-from auth.session_persistence import (
-    SESSION_TTL_SECONDS,
-    read_session_secret,
-    sign_session,
-    verify_session,
 )
 from auth.token_manager import TokenManager
 from components.ai_client import RemediAXAI
@@ -98,7 +91,9 @@ _RUNS_ROOT = Path("_remediax_runs")
 _GITHUB_URL = "https://github.com/nileshvary/nileshvary-ai-security-engine"
 _REMEMBER_PARAM = "t"
 _SCREEN_PARAM = "p"
-_FB_SESSION_COOKIE = "remediax_fb_session"
+_FB_EMAIL_PARAM = "e"
+_FB_UID_PARAM = "uid"
+_FB_TIER_PARAM = "tier"
 _RESTORABLE_SCREENS: frozenset[str] = frozenset(
     {
         "landing",
@@ -151,79 +146,63 @@ def _clear_remembered_token() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Firebase remember-me — HMAC-signed cookie, 24h TTL
+# Firebase remember-me — URL query params (?e=, ?uid=, ?tier=)
 # ---------------------------------------------------------------------------
+#
+# Mirrors the existing admin ``?t=RMX-*`` flow. SECURITY NOTES:
+#   * URL params leak via browser history, server access logs, the
+#     HTTP Referer header (any outbound link the user clicks), and
+#     any URL the user copies / shares. Same exposure as the admin
+#     token flow already in use.
+#   * There is NO signature on these params. Anyone who knows a
+#     uid + matching email can mint a working URL. uids are opaque
+#     Firebase identifiers but should not be considered secret.
+#   * ``?tier=`` is written for parity with the spec but the
+#     auto-login path ALWAYS refetches the tier from Firestore so
+#     editing ``?tier=premium`` in the address bar does NOT grant
+#     premium features.
 
 
-def _get_cookie_manager() -> stx.CookieManager:
-    """Return a per-session CookieManager instance.
-
-    extra-streamlit-components instantiates a JS widget on construction
-    and complains if more than one CookieManager exists per script
-    run, so we stash a single instance in ``st.session_state``. The
-    first call per session also requires a JS round-trip before
-    cookies become readable; callers must tolerate ``None`` on the
-    initial frame.
-    """
-    cm = st.session_state.get("_cookie_manager")
-    if cm is None:
-        cm = stx.CookieManager(key="remediax_cookie_manager")
-        st.session_state["_cookie_manager"] = cm
-    return cm
-
-
-def _persist_firebase_session(uid: str, email: str) -> None:
-    """Set the signed remember-me cookie after a successful Firebase login.
-
-    Returns silently when ``st.secrets["session"]["secret"]`` is
-    missing; warns loudly via the logger so the operator can spot a
-    misconfiguration. Cookie persistence requires CookieManager to
-    have mounted on a previous rerun, which we ensure by calling
-    ``_get_cookie_manager()`` at the very top of ``main``.
-    """
-    secret = read_session_secret(_safe_secrets())
-    if not secret:
-        logger.warning(
-            "REMEMBER-ME DISABLED: [session].secret is not configured in "
-            ".streamlit/secrets.toml. Add a `[session]` section with a "
-            "`secret = \"<random>\"` line and restart."
-        )
-        return
+def _read_query_param(name: str) -> str | None:
+    """Return ``st.query_params[name]`` as a stripped str, or ``None``."""
     try:
-        token = sign_session(uid, email, secret=secret)
-        _get_cookie_manager().set(
-            _FB_SESSION_COOKIE,
-            token,
-            expires_at=datetime.utcnow() + timedelta(seconds=SESSION_TTL_SECONDS),
-            key="rmx-set-fb-cookie",
-        )
-        logger.info(
-            "Firebase remember-me cookie SET for uid=%s email=%s (TTL=%ds)",
-            uid,
-            email,
-            SESSION_TTL_SECONDS,
-        )
-    except Exception as exc:  # pragma: no cover - cookie write surface
-        logger.warning("Failed to persist Firebase session cookie: %s", exc)
-
-
-def _clear_firebase_session_cookie() -> None:
-    """Delete the remember-me cookie on logout. No-op if absent."""
-    try:
-        cm = _get_cookie_manager()
-        if cm.get(_FB_SESSION_COOKIE):
-            cm.delete(_FB_SESSION_COOKIE, key="rmx-del-fb-cookie")
-            logger.info("Firebase remember-me cookie CLEARED")
-    except Exception as exc:  # pragma: no cover - cookie delete surface
-        logger.warning("Failed to clear Firebase session cookie: %s", exc)
-
-
-def _safe_secrets() -> Any:
-    """Return ``st.secrets`` or ``None`` if reading raises."""
-    try:
-        return st.secrets
+        raw = st.query_params.get(name)
     except Exception:  # pragma: no cover - defensive
         return None
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        raw = raw[0] if raw else None
+    if not raw:
+        return None
+    return str(raw).strip()
+
+
+def _persist_firebase_session_to_url(uid: str, email: str, tier: str) -> None:
+    """Write Firebase remember-me identity to ``?e=``, ``?uid=``, ``?tier=``."""
+    try:
+        st.query_params[_FB_EMAIL_PARAM] = email
+        st.query_params[_FB_UID_PARAM] = uid
+        st.query_params[_FB_TIER_PARAM] = tier
+        logger.info(
+            "FB URL remember-me SET: uid=%s email=%s tier=%s", uid, email, tier
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to persist Firebase session to URL: %s", exc)
+
+
+def _clear_firebase_session_from_url() -> None:
+    """Remove ``?e=``, ``?uid=``, ``?tier=`` from the URL (no-op if absent)."""
+    try:
+        cleared = False
+        for key in (_FB_EMAIL_PARAM, _FB_UID_PARAM, _FB_TIER_PARAM):
+            if key in st.query_params:
+                del st.query_params[key]
+                cleared = True
+        if cleared:
+            logger.info("FB URL remember-me CLEARED")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to clear Firebase session URL params: %s", exc)
 
 
 def _read_query_screen() -> str | None:
@@ -377,68 +356,71 @@ def _attempt_auto_login() -> None:
         _clear_screen_param()
 
 
-def _attempt_firebase_cookie_login() -> None:
-    """If a signed remember-me cookie is present, revalidate and log in.
+def _attempt_firebase_url_auto_login() -> None:
+    """If ``?e=`` and ``?uid=`` are present, validate and log in.
 
-    extra-streamlit-components' ``CookieManager.get_all`` returns its
-    ``default={}`` value during the first rerun (JS round-trip hasn't
-    landed yet) — there is no first-class "ready" signal that
-    distinguishes "no cookies" from "still loading". We therefore run
-    this function on EVERY rerun while the user is unauthenticated,
-    refreshing the cookie cache each time. The cookie value becomes
-    readable on the rerun that follows the JS round-trip; by rerun 2
-    or 3 we either have it or we know we never will.
+    Mirrors the admin ``?t=`` flow. Runs once per session (guarded by
+    ``fb_url_login_tried``) so we do not re-hit Firestore on every
+    rerun. The Firestore profile must exist AND its email must match
+    the URL claim; otherwise the params are stripped and the user is
+    shown the access screen. Tier is ALWAYS taken from Firestore so a
+    user editing ``?tier=premium`` in the address bar cannot self-
+    promote.
     """
     if st.session_state.authenticated:
         return
-    secret = read_session_secret(_safe_secrets())
-    if not secret:
-        # Already warned about once in _persist_firebase_session; quiet
-        # here to avoid log spam on every rerun.
+    if st.session_state.get("fb_url_login_tried"):
         return
-    try:
-        cm = _get_cookie_manager()
-        all_cookies = cm.get_all() or {}
-    except Exception as exc:  # pragma: no cover - cookie read surface
-        logger.warning("Cookie auto-login: get_all raised %s", exc)
+    email = _read_query_param(_FB_EMAIL_PARAM)
+    uid = _read_query_param(_FB_UID_PARAM)
+    if not email or not uid:
+        # Nothing to do; don't mark tried — there's no work to skip.
         return
-    raw = all_cookies.get(_FB_SESSION_COOKIE)
-    logger.info(
-        "Cookie auto-login: get_all returned %d cookie(s); %s %s",
-        len(all_cookies),
-        _FB_SESSION_COOKIE,
-        f"present (len={len(raw)})" if raw else "ABSENT",
-    )
-    if not raw:
+    st.session_state.fb_url_login_tried = True
+    logger.info("FB URL auto-login: checking uid=%s email=%s", uid, email)
+
+    if not is_firebase_ready():
+        logger.info("FB URL auto-login: Firebase not configured; skipping")
         return
-    payload = verify_session(str(raw), secret=secret)
-    if payload is None:
+
+    profile = get_user(uid)
+    if profile is None:
         logger.warning(
-            "Cookie auto-login: verify_session FAILED (tampered / expired "
-            "/ wrong secret) — dropping cookie"
+            "FB URL auto-login: uid=%s not found in Firestore; clearing params",
+            uid,
         )
-        try:
-            cm.delete(_FB_SESSION_COOKIE, key="rmx-del-fb-cookie-bad")
-        except Exception as exc:  # pragma: no cover - cookie delete surface
-            logger.warning("Failed to drop invalid Firebase cookie: %s", exc)
+        _clear_firebase_session_from_url()
         return
-    uid = payload["uid"]
-    email = payload["email"]
+
+    profile_email = profile.get("email")
+    if profile_email and profile_email != email:
+        logger.warning(
+            "FB URL auto-login: email mismatch (url=%s profile=%s); clearing",
+            email,
+            profile_email,
+        )
+        _clear_firebase_session_from_url()
+        return
+
+    # Always trust Firestore for tier (URL is user-editable).
+    tier = profile.get("tier") or "basic"
     logger.info(
-        "Cookie auto-login: verify OK uid=%s email=%s issued_at=%d",
+        "FB URL auto-login: OK uid=%s email=%s tier=%s (URL tier ignored)",
         uid,
         email,
-        payload["issued_at"],
+        tier,
     )
-    profile = get_user(uid) or {}
     _activate_firebase_session(
         {
             "uid": uid,
-            "email": email,
+            "email": profile_email or email,
             "name": profile.get("name") or email.split("@")[0],
-            "tier": profile.get("tier") or "basic",
+            "tier": tier,
         }
     )
+    # Re-write URL params with the authoritative tier so the address
+    # bar reflects reality after auto-login.
+    _persist_firebase_session_to_url(uid, profile_email or email, tier)
     desired = _read_query_screen()
     st.session_state.screen = desired or "landing"
     st.rerun()
@@ -1270,7 +1252,7 @@ def _do_logout() -> None:
     * Always triggers a rerun so the redirect takes effect immediately.
     """
     _clear_remembered_token()
-    _clear_firebase_session_cookie()
+    _clear_firebase_session_from_url()
     _clear_screen_param()
     logout()
     st.rerun()
@@ -1598,11 +1580,14 @@ def _render_login_tab() -> None:
         _activate_firebase_session(profile)
         st.success(f"Welcome back, {profile.get('name') or email}!")
         if remember_me and profile.get("uid"):
-            # HMAC-signed cookie with 24h TTL. Survives page refresh
-            # without exposing the password — the cookie carries only
-            # uid + email + signature.
-            _persist_firebase_session(
-                str(profile["uid"]), profile.get("email") or email.strip()
+            # URL-param remember-me — same trust model as the admin
+            # ``?t=`` flow. Tier is included for parity with the spec
+            # but is always re-validated against Firestore on auto-
+            # login, so editing the URL cannot promote a user.
+            _persist_firebase_session_to_url(
+                str(profile["uid"]),
+                profile.get("email") or email.strip(),
+                profile.get("tier") or "basic",
             )
         st.rerun()
 
@@ -1668,13 +1653,14 @@ def _render_signup_tab() -> None:
             )
             return
         _activate_firebase_session(login_profile)
-        # New signups always get a remember-me cookie — the user just
+        # New signups always get the URL remember-me — the user just
         # created the account, refusing to persist would log them out
         # on the next refresh and re-create the bug we are fixing.
         if login_profile.get("uid"):
-            _persist_firebase_session(
+            _persist_firebase_session_to_url(
                 str(login_profile["uid"]),
                 login_profile.get("email") or email.strip(),
+                login_profile.get("tier") or "basic",
             )
         # Fire-and-forget admin notification.
         try:
@@ -3518,23 +3504,16 @@ def main() -> None:
 
     initialize_state()
 
-    # Mount the cookie manager as the very first Streamlit widget so
-    # its JS frontend has the longest possible window to complete the
-    # cookie read round-trip before any auth check or screen render
-    # runs. Required for both the auto-login path (reads the cookie)
-    # and the login submit path (writes it before rerun).
-    _get_cookie_manager()
-
     # Best-effort auto-login from the ``?t=`` URL parameter. No-ops
     # when the user is already authenticated, no token is remembered,
     # or we have already tried this session.
     _attempt_auto_login()
 
-    # Then try the HMAC-signed Firebase remember-me cookie. Runs once
-    # per session (guarded by session_state); silent no-op when the
-    # cookie is missing, expired, tampered, or no session secret is
-    # configured for this deploy.
-    _attempt_firebase_cookie_login()
+    # Then try the Firebase URL remember-me (?e=, ?uid=, ?tier=).
+    # Same URL-leakage profile as the admin ?t= flow above; see
+    # docstring on _attempt_firebase_url_auto_login for the security
+    # tradeoffs.
+    _attempt_firebase_url_auto_login()
 
     # Only authenticated users (Firebase or admin token) can reach the
     # app. Everyone else is forced onto the access screen.
