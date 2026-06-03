@@ -53,6 +53,12 @@ from components.owasp_content import (
     ESCALATION_CATEGORIES,
     OWASP_CONTENT,
 )
+from components.garak_targets import (
+    PROVIDERS_BY_TARGET,
+    TARGET_TYPES,
+    build_command,
+    get_provider,
+)
 from components.security_score import calculate_security_score, score_status
 from components.voice import (
     consume_voice_command,
@@ -2922,151 +2928,73 @@ _PROBE_OPTIONS: list[tuple[str, str, bool]] = [
     ("Hallucination probes", "snowball", False),
 ]
 
-_TARGET_PROVIDERS: dict[str, list[str]] = {
-    "LLM Model": [
-        "OpenAI GPT-4",
-        "OpenAI GPT-3.5",
-        "Anthropic Claude",
-        "Google Gemini",
-        "Meta Llama",
-        "Mistral",
-        "Custom endpoint",
-    ],
-    "AI Agent": [
-        "LangChain",
-        "AutoGPT",
-        "CrewAI",
-        "Custom REST",
-    ],
-    "REST API Endpoint": ["Generic REST API"],
-    "Chatbot Application": [
-        "Web Chatbot (custom built)",
-        "Slack Bot",
-        "Discord Bot",
-        "Microsoft Teams Bot",
-        "WhatsApp Bot",
-        "Telegram Bot",
-        "Intercom",
-        "Zendesk",
-        "Salesforce Einstein Bot",
-        "HubSpot Chatbot",
-        "Drift",
-        "LiveChat",
-        "Custom REST API endpoint",
-    ],
-    "Custom Python Function": ["Python function wrapper"],
-}
-
-
-def _build_garak_command(
-    target: str, provider: str, probe_codes: list[str]
-) -> tuple[str, str, str]:
-    """Return (install_step, command, estimate) for the chosen target/provider.
-
-    ``install_step`` is the pip install line (always
-    ``pip install garak``). ``command`` is the runnable garak invocation
-    with the user-selected probes injected. ``estimate`` is a coarse
-    expected runtime label.
-    """
-    install = "pip install garak"
+def _scanner_estimate(probe_codes: list[str]) -> str:
+    """Coarse runtime label for the Step 4 footnote."""
     if probe_codes:
-        probe_arg = ",".join(probe_codes)
-        probe_flag = f" --probes {probe_arg}"
-        estimate = "5–10 minutes (selected probes only)"
-    else:
-        probe_flag = ""
-        estimate = "30–60 minutes (all probes)"
+        return "5–10 minutes (selected probes only)"
+    return "30–60 minutes (all probes)"
 
-    cmd: str
-    if target == "LLM Model":
-        if "OpenAI" in provider:
-            cmd = (
-                f"garak --model openai "
-                f"--model_type openai.OpenAIGenerator{probe_flag} "
-                f"--generations 5"
-            )
-        elif "Claude" in provider:
-            cmd = (
-                f"garak --model anthropic "
-                f"--model_type anthropic.AnthropicGenerator{probe_flag} "
-                f"--generations 5"
-            )
-        elif "Gemini" in provider:
-            cmd = (
-                f"garak --model googleai "
-                f"--model_type googleai.GoogleAIGenerator{probe_flag} "
-                f"--generations 5"
-            )
-        elif "Llama" in provider:
-            cmd = (
-                f"garak --model huggingface "
-                f"--model_type huggingface.Model "
-                f"--model_name meta-llama/Llama-3-8B-Instruct"
-                f"{probe_flag} --generations 5"
-            )
-        elif "Mistral" in provider:
-            cmd = (
-                f"garak --model huggingface "
-                f"--model_type huggingface.Model "
-                f"--model_name mistralai/Mistral-7B-Instruct-v0.2"
-                f"{probe_flag} --generations 5"
-            )
-        else:  # Custom endpoint
-            cmd = (
-                f"garak --model rest --model_type rest.RestGenerator "
-                f"--uri YOUR_ENDPOINT_URL{probe_flag} --generations 5"
-            )
-    elif target == "AI Agent":
-        if "LangChain" in provider:
-            cmd = (
-                "# First wrap your LangChain agent with garak's function "
-                "generator:\n"
-                "# from garak.generators.function import SingleFunction\n"
-                "# Save a Python file (e.g. agent_wrap.py) that exposes a\n"
-                "# top-level `call(prompt: str) -> str` function which\n"
-                "# invokes your agent and returns the string output.\n"
-                "\n"
-                f"garak --model function "
-                f"--model_type function.SingleFunction "
-                f"--model_name agent_wrap.call{probe_flag} --generations 5"
-            )
-        elif "AutoGPT" in provider or "CrewAI" in provider:
-            cmd = (
-                f"# Expose your agent's input/output as a callable "
-                f"function, then run:\n"
-                f"garak --model function "
-                f"--model_type function.SingleFunction "
-                f"--model_name your_module.call{probe_flag} "
-                f"--generations 5"
-            )
-        else:  # Custom REST
-            cmd = (
-                f"garak --model rest --model_type rest.RestGenerator "
-                f"--uri YOUR_AGENT_REST_URL{probe_flag} --generations 5"
-            )
-    elif target == "REST API Endpoint":
-        cmd = (
-            f"garak --model rest --model_type rest.RestGenerator "
-            f"--uri YOUR_ENDPOINT_URL{probe_flag} --generations 5"
+
+def _collect_custom_fields(provider_kind: str, key_prefix: str) -> dict[str, str]:
+    """Render the Other/Custom text inputs and collect their values.
+
+    Streamlit widgets must render unconditionally per rerun, so this
+    helper sits inside the scanner UI and only fires when the user
+    has selected an ``is_custom`` provider. ``key_prefix`` namespaces
+    the widget keys per target so switching targets does not collide
+    with cached values.
+    """
+    out: dict[str, str] = {}
+    if provider_kind == "custom_model":
+        out["model_type"] = st.text_input(
+            "Model type",
+            placeholder="e.g. huggingface, openai, replicate",
+            key=f"{key_prefix}-custom-model-type",
         )
-    elif target == "Chatbot Application":
-        cmd = (
-            f"# Most chatbots expose a webhook URL or Bot API. Point "
-            f"garak's REST generator at it:\n"
-            f"garak --model rest --model_type rest.RestGenerator "
-            f"--uri YOUR_CHATBOT_WEBHOOK{probe_flag} --generations 5"
+        out["model_name"] = st.text_input(
+            "Model name",
+            placeholder="e.g. gpt2, my-org/my-model",
+            key=f"{key_prefix}-custom-model-name",
         )
-    else:  # Custom Python Function
-        cmd = (
-            f"# Save a Python file (e.g. my_target.py) exposing\n"
-            f"# def call(prompt: str) -> str:\n"
-            f"#     return your_model(prompt)\n"
-            f"\n"
-            f"garak --model function "
-            f"--model_type function.SingleFunction "
-            f"--model_name my_target.call{probe_flag} --generations 5"
+        out["api_key"] = st.text_input(
+            "API Key (optional)",
+            type="password",
+            key=f"{key_prefix}-custom-api-key",
         )
-    return install, cmd, estimate
+    elif provider_kind == "custom_function":
+        out["framework_name"] = st.text_input(
+            "Agent framework name",
+            placeholder="e.g. LangChain, AutoGen, my_pkg",
+            key=f"{key_prefix}-custom-framework",
+        )
+        out["function_path"] = st.text_input(
+            "REST endpoint URL or function path",
+            placeholder="e.g. https://api.example.com/run "
+            "or my_pkg.handlers.scan",
+            key=f"{key_prefix}-custom-function-path",
+        )
+        out["auth_token"] = st.text_input(
+            "Auth token (optional)",
+            type="password",
+            key=f"{key_prefix}-custom-auth-token",
+        )
+    elif provider_kind == "custom_rest":
+        out["endpoint_url"] = st.text_input(
+            "Endpoint URL",
+            placeholder="https://api.example.com/chat",
+            key=f"{key_prefix}-custom-endpoint",
+        )
+        out["auth_header"] = st.text_input(
+            "Auth header / token (optional)",
+            type="password",
+            key=f"{key_prefix}-custom-auth-header",
+        )
+        out["request_format"] = st.text_input(
+            "Request format (optional)",
+            placeholder='e.g. {"prompt": "<INPUT>"}',
+            key=f"{key_prefix}-custom-request-format",
+        )
+    return out
 
 
 def render_scanner() -> None:
@@ -3085,7 +3013,7 @@ def render_scanner() -> None:
     )
     target = st.radio(
         "Target type",
-        list(_TARGET_PROVIDERS.keys()),
+        list(TARGET_TYPES),
         index=0,
         key="scanner-target",
         label_visibility="collapsed",
@@ -3097,18 +3025,51 @@ def render_scanner() -> None:
         "STEP 2 — SELECT PROVIDER</div>",
         unsafe_allow_html=True,
     )
-    providers = _TARGET_PROVIDERS[target]
-    provider = st.radio(
+    providers = PROVIDERS_BY_TARGET[target]
+    # Format the radio label so paid providers get "(needs API key)"
+    # and free ones get the green badge inline.
+    def _radio_label(label: str) -> str:
+        p = get_provider(target, label)
+        if p is None:
+            return label
+        if p.is_free:
+            return f"{p.label}  🟢 FREE — no API key required"
+        if p.api_key_env:
+            return f"{p.label}  (needs API key)"
+        return p.label
+
+    provider_label = st.radio(
         "Provider",
-        providers,
+        [p.label for p in providers],
+        format_func=_radio_label,
         index=0,
         key=f"scanner-provider-{target}",
         label_visibility="collapsed",
     )
+    provider = get_provider(target, str(provider_label))
+    assert provider is not None  # radio guarantees a catalog entry
+
+    if provider.is_free:
+        st.markdown(
+            '<div style="display:inline-block;padding:4px 10px;'
+            "border-radius:4px;background:#00ff8822;color:#00ff88;"
+            'font-weight:600;font-size:0.85rem;letter-spacing:0.05em;">'
+            "FREE — No API key required</div>",
+            unsafe_allow_html=True,
+        )
+
+    # ── STEP 2b — Other/Custom inputs (only when applicable) ────────
+    custom_fields: dict[str, str] = {}
+    if provider.is_custom:
+        st.caption("Tell us about your target so we can generate the right command:")
+        custom_fields = _collect_custom_fields(
+            provider.kind, key_prefix=f"scanner-{target}"
+        )
+
     if target == "Chatbot Application":
         st.caption(
-            "Don't see your platform? Select **Custom REST API endpoint** — "
-            "works for any chatbot that accepts text via HTTP."
+            "Don't see your platform? Pick **Other/Custom Chatbot** — works "
+            "for any chatbot that accepts text via HTTP."
         )
 
     # ── STEP 3 — Probes ─────────────────────────────────────────────
@@ -3158,14 +3119,23 @@ def render_scanner() -> None:
         "STEP 4 — GENERATED COMMANDS</div>",
         unsafe_allow_html=True,
     )
-    install_step, cmd, estimate = _build_garak_command(
-        target, provider, selected_codes
+    export_line, run_cmd = build_command(
+        provider, probe_codes=selected_codes, custom=custom_fields
     )
     st.caption("**Step 4a — Install garak:**")
-    st.code(install_step, language="bash")
+    st.code("pip install garak", language="bash")
     st.caption("**Step 4b — Run the scan:**")
-    st.code(cmd, language="bash")
-    st.caption(f"⏱️ Estimated scan time: **{estimate}**")
+    if export_line:
+        # Show export + run as one shell snippet so users can copy
+        # both lines in a single paste.
+        st.code(f"{export_line}\n{run_cmd}", language="bash")
+    else:
+        st.code(run_cmd, language="bash")
+    st.caption(
+        "💡 Copy and run this in your terminal. "
+        "Results will be saved as `hitlog.jsonl`."
+    )
+    st.caption(f"⏱️ Estimated scan time: **{_scanner_estimate(selected_codes)}**")
 
     # ── STEP 5 — Find results ───────────────────────────────────────
     st.markdown(
@@ -3192,6 +3162,9 @@ def render_scanner() -> None:
         '<div class="rx-section-eyebrow" style="margin-top:18px;">'
         "STEP 6 — UPLOAD RESULTS TO REMEDIAX</div>",
         unsafe_allow_html=True,
+    )
+    st.caption(
+        "📂 Already ran garak locally? Upload your `hitlog.jsonl` directly."
     )
     if not has_premium:
         _render_locked_feature(
