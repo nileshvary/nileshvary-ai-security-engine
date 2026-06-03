@@ -1581,8 +1581,8 @@ def _render_premium_request_form() -> None:
             f"Hi {name_clean},\n\n"
             "Your 7-day RemediAX trial token:\n\n"
             f"    {trial_token}\n\n"
-            "Paste it into the 'Admin token login' form on the access "
-            "screen to activate.\n\n"
+            "Enter your token at: remediax.streamlit.app\n"
+            "Click 'Have an access token?' to enter it.\n\n"
             "For permanent Premium access, we will review your request "
             "and contact you.\n\n"
             "— RemediAX Security Team\n"
@@ -1609,6 +1609,83 @@ def _render_premium_request_form() -> None:
             )
             st.code(trial_token, language=None)
         st.session_state.show_premium_form = False
+
+
+def _activate_token_session(token_input: str, *, remember_me: bool) -> None:
+    """Validate an RMX-* token and activate the matching session.
+
+    Shared by the public trial-token form and the hidden admin-token
+    form. The token's ``permanent`` flag drives whether the session is
+    admin: permanent tokens grant admin (``is_admin=True``); non-
+    permanent trial tokens unlock premium features only. All session
+    state writes match the previous admin-only flow so downstream
+    screens behave identically.
+    """
+    tm = TokenManager()
+    ok, status, record = tm.validate_token(token_input, ip=_client_id())
+    if ok:
+        is_admin_token = bool(record.get("permanent"))
+        st.session_state.authenticated = True
+        st.session_state.token_record = record
+        st.session_state.is_admin = is_admin_token
+        st.session_state.user_uid = None
+        st.session_state.user_email = None
+        st.session_state.user_name = "Admin" if is_admin_token else "Trial user"
+        st.session_state.user_tier = "developer"
+        st.session_state.screen = "landing"
+        if remember_me:
+            _persist_token(token_input.strip())
+        else:
+            _clear_remembered_token()
+        st.rerun()
+    elif status.startswith("locked:"):
+        st.error(f"🚫 Too many attempts. Wait {status.split(':', 1)[1]}m.")
+    elif status == "expired":
+        st.error("⏰ Token expired.")
+    elif status == "revoked":
+        st.error("❌ Token revoked.")
+    elif status.startswith("invalid:"):
+        st.error(
+            f"❌ Invalid token. {status.split(':', 1)[1]} attempts remaining."
+        )
+    else:
+        st.error(f"❌ {status}")
+
+
+def _render_trial_token_form() -> None:
+    """Public-facing token entry for users with a 7-day trial token.
+
+    Surfaced from a "🔑 Have an access token?" expander on the access
+    screen so premium-request submitters can find where to paste the
+    token from their confirmation email without needing the
+    ``?admin=true`` back-door URL.
+    """
+    st.caption(
+        "Paste the trial token from your premium-request confirmation "
+        "email."
+    )
+    with st.form("trial-token-form"):
+        token_input = st.text_input(
+            "Access token",
+            type="password",
+            placeholder="RMX-...",
+            key="trial-token-input",
+        )
+        remember_me = st.checkbox(
+            "Remember me on this device",
+            value=False,
+            help=(
+                "Stores your token in the URL so you stay signed in "
+                "across page refreshes. Anyone with the URL can use the "
+                "token. Uncheck on shared screens."
+            ),
+            key="trial-token-remember",
+        )
+        submit = st.form_submit_button(
+            "🔑 Sign in with token", use_container_width=True
+        )
+    if submit:
+        _activate_token_session(token_input, remember_me=remember_me)
 
 
 def _render_admin_token_form() -> None:
@@ -1638,35 +1715,7 @@ def _render_admin_token_form() -> None:
             "🛡️ Sign in as admin", use_container_width=True
         )
     if submit:
-        tm = TokenManager()
-        ok, status, record = tm.validate_token(token_input, ip=_client_id())
-        if ok:
-            st.session_state.authenticated = True
-            st.session_state.token_record = record
-            st.session_state.is_admin = bool(record.get("permanent"))
-            # Admin tier is independent of Firebase user tier.
-            st.session_state.user_uid = None
-            st.session_state.user_email = None
-            st.session_state.user_name = "Admin"
-            st.session_state.user_tier = "developer"
-            st.session_state.screen = "landing"
-            if remember_me:
-                _persist_token(token_input.strip())
-            else:
-                _clear_remembered_token()
-            st.rerun()
-        elif status.startswith("locked:"):
-            st.error(f"🚫 Too many attempts. Wait {status.split(':', 1)[1]}m.")
-        elif status == "expired":
-            st.error("⏰ Token expired.")
-        elif status == "revoked":
-            st.error("❌ Token revoked.")
-        elif status.startswith("invalid:"):
-            st.error(
-                f"❌ Invalid token. {status.split(':', 1)[1]} attempts remaining."
-            )
-        else:
-            st.error(f"❌ {status}")
+        _activate_token_session(token_input, remember_me=remember_me)
 
 
 def render_access() -> None:
@@ -1854,6 +1903,13 @@ def render_access() -> None:
             st.session_state.show_premium_form = True
         if st.session_state.get("show_premium_form"):
             _render_premium_request_form()
+
+        # Trial-token entry — collapsible section visible to everyone
+        # so users who received a 7-day trial token via email can find
+        # where to paste it without knowing about the ``?admin=true``
+        # back-door URL.
+        with st.expander("🔑 Have an access token?", expanded=False):
+            _render_trial_token_form()
 
         # Admin token login — hidden by default. Surfaced only when the
         # URL carries ``?admin=true`` so the public landing stays clean.
