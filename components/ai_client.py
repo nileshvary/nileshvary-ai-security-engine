@@ -4,12 +4,16 @@ Every public method returns ``None`` when the underlying API call fails,
 so callers can fall back to the pre-written ``OWASP_CONTENT`` strings
 without crashing the UI.
 
-The prompts are deliberately attack-specific — they pass the actual
-attack prompt, the model response, AND the resolved OWASP category
-(by code AND human name) so Claude can produce per-finding rather than
-per-category boilerplate. Each method narrows Claude's task to one
-concrete output (danger explanation, fix justification, guardrail
-pattern, severity assessment) so responses stay short and on-topic.
+Prompt design: each method ships the actual attack prompt + response +
+resolved OWASP category (with the human-readable name appended) and
+asks Claude for ONE concrete output. The prompt text is the product
+spec verbatim, deliberately terse, so responses stay short and on-
+topic instead of devolving into clarifying questions.
+
+The previous version of this module prepended a global "OWASP
+TAXONOMY REFERENCE" table to every call. That was dropped — the per-
+prompt ``Category: LLMnn (Name)`` line is enough for Claude and saves
+roughly 300 tokens per call.
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ from __future__ import annotations
 import logging
 
 from integration_bridge.models import Finding
-from integration_bridge.owasp_taxonomy import AGENTIC_TOP_10, LLM_TOP_10
+from integration_bridge.owasp_taxonomy import LLM_TOP_10
 from remediation_engine.models import RemediationResult, RemediationStrategy
 
 logger = logging.getLogger(__name__)
@@ -38,73 +42,15 @@ def _owasp_category_name(code: str) -> str:
 
     Falls back to the bare code (``"LLM07"``) when the code isn't
     present in the taxonomy — defensive only, since the parser
-    already validates against ``VALID_LLM_CATEGORIES``.
+    already validates against ``VALID_LLM_CATEGORIES``. The format
+    ``"LLM07 (System Prompt Leakage)"`` is what every prompt below
+    feeds Claude so the model can name the category correctly even
+    while reasoning from the bare code.
     """
     entry = LLM_TOP_10.get(code)
     if entry is None:
         return code
     return f"{code} ({entry.name})"
-
-
-def _agentic_category_names(codes: list[str]) -> str:
-    """Format an ASI code list as ``"ASI02 (Tool Misuse...), ASI10 (Rogue Agents)"``.
-
-    Returns the literal ``"(none)"`` when the list is empty so the
-    prompt context stays readable instead of trailing into a blank.
-    """
-    if not codes:
-        return "(none)"
-    parts: list[str] = []
-    for code in codes:
-        entry = AGENTIC_TOP_10.get(code)
-        if entry is None:
-            parts.append(code)
-        else:
-            parts.append(f"{code} ({entry.name})")
-    return ", ".join(parts)
-
-
-# Pre-rendered reference tables shared across prompts so Claude has
-# the full OWASP vocabulary (LLM Top 10 + Agentic Top 10) in scope.
-# Computed once at import time — both dicts are immutable taxonomy
-# constants, so this is safe.
-def _build_taxonomy_index() -> str:
-    llm_lines = [
-        f"  {code} = {entry.name}" for code, entry in LLM_TOP_10.items()
-    ]
-    asi_lines = [
-        f"  {code} = {entry.name}" for code, entry in AGENTIC_TOP_10.items()
-    ]
-    return (
-        "OWASP TAXONOMY REFERENCE (use these exact codes and names):\n"
-        "LLM Top 10:\n"
-        + "\n".join(llm_lines)
-        + "\n"
-        "Agentic Top 10:\n"
-        + "\n".join(asi_lines)
-    )
-
-
-_TAXONOMY_INDEX: str = _build_taxonomy_index()
-
-
-def _attack_context_block(finding: Finding) -> str:
-    """Format the per-attack context block shared across every prompt.
-
-    Always includes both the LLM Top 10 and Agentic Top 10 attributions
-    so Claude can produce accurate per-finding analysis using the right
-    category names instead of guessing.
-    """
-    return (
-        f"OWASP LLM Category: {_owasp_category_name(finding.owasp_llm_category)}\n"
-        f"OWASP Agentic Categories: "
-        f"{_agentic_category_names(list(finding.owasp_agentic_categories))}\n"
-        f"Severity (parser estimate): {finding.severity}\n"
-        f"Probe: {finding.probe_name}\n"
-        f"Detector: {finding.detector_name}\n"
-        f"Attack prompt:\n{finding.attack_prompt[:_PROMPT_EXCERPT_CHARS]}\n"
-        f"Model response:\n{finding.model_response[:_RESPONSE_EXCERPT_CHARS]}"
-    )
 
 
 class RemediAXAI:
@@ -126,21 +72,19 @@ class RemediAXAI:
         self.temperature = _TEMPERATURE
 
     def explain_finding(self, finding: Finding) -> str | None:
-        """Why is THIS specific attack dangerous? 3 sentences, or ``None`` on failure.
+        """Why is THIS specific response dangerous? 2 sentences, or ``None``.
 
-        Anchors Claude in the actual prompt / response / OWASP
-        category so the answer is concrete to the incident rather than
-        a re-statement of the category description.
+        Uses the spec's terse 4-line context format so Claude doesn't
+        spend tokens restating the category description.
         """
         prompt = (
-            f"{_TAXONOMY_INDEX}\n\n"
-            "You are an LLM security expert reviewing a specific "
-            "incident from a garak scan.\n\n"
-            f"{_attack_context_block(finding)}\n\n"
-            "In 3 short sentences, explain why THIS specific attack "
-            "on THIS specific response is dangerous. Be concrete — "
-            "reference the actual content, not generic category "
-            "boilerplate."
+            "You are an LLM security expert.\n"
+            "This exact attack succeeded:\n"
+            f"Attack: {finding.attack_prompt[:_PROMPT_EXCERPT_CHARS]}\n"
+            f"Response: {finding.model_response[:_RESPONSE_EXCERPT_CHARS]}\n"
+            f"Category: {_owasp_category_name(finding.owasp_llm_category)}\n"
+            "In 2 sentences explain why THIS specific response is "
+            "dangerous. Be concrete."
         )
         return self._call(prompt)
 
@@ -170,21 +114,25 @@ class RemediAXAI:
             return self._explain_log_only(result, finding)
 
         notes_str = " | ".join(result.notes)[:300]
-        context = (
-            f"{_attack_context_block(finding)}\n\n"
-            if finding is not None
-            else ""
-        )
-        prompt = (
-            f"{_TAXONOMY_INDEX}\n\n"
-            "You are an LLM security expert explaining a remediation.\n\n"
-            f"{context}"
-            f"Remediation strategy: {result.strategy}\n"
-            f"Implementation notes: {notes_str}\n\n"
-            "In 2 short sentences, explain why this fix BLOCKS the "
-            "specific attack above. Be practical and tied to the "
-            "actual exploit."
-        )
+        if finding is not None:
+            prompt = (
+                "You are an LLM security expert.\n"
+                "This exact attack was patched:\n"
+                f"Attack: {finding.attack_prompt[:_PROMPT_EXCERPT_CHARS]}\n"
+                f"Response: {finding.model_response[:_RESPONSE_EXCERPT_CHARS]}\n"
+                f"Category: {_owasp_category_name(finding.owasp_llm_category)}\n"
+                f"Remediation strategy: {result.strategy}\n"
+                f"Implementation notes: {notes_str}\n"
+                "In 2 sentences explain why this fix BLOCKS the "
+                "exact attack above."
+            )
+        else:
+            prompt = (
+                "You are an LLM security expert.\n"
+                f"Remediation strategy: {result.strategy}\n"
+                f"Implementation notes: {notes_str}\n"
+                "In 2 sentences explain why this fix works."
+            )
         return self._call(prompt)
 
     def _explain_log_only(
@@ -192,95 +140,105 @@ class RemediAXAI:
         result: RemediationResult,
         finding: Finding | None,
     ) -> str | None:
-        """Recommend guardrails for a LOG_ONLY (no runtime patch) finding.
+        """Recommend an input guardrail for a LOG_ONLY (no patch) finding.
 
-        Uses the product-spec prompt verbatim when a finding is
-        supplied. When no finding is available (legacy call path)
-        falls back to the implementation notes so Claude still has
-        something concrete to anchor on.
+        Uses the product-spec prompt with the actual OWASP category
+        name substituted in (so an LLM03 Supply Chain finding gets a
+        Supply-Chain-specific guardrail, not a System-Prompt-Leakage
+        one). Falls back to the implementation notes when no finding
+        is supplied so the legacy call path still works.
         """
         if finding is not None:
-            attack_excerpt = finding.attack_prompt[:_PROMPT_EXCERPT_CHARS]
-            response_excerpt = finding.model_response[:_RESPONSE_EXCERPT_CHARS]
-            category_label = _owasp_category_name(finding.owasp_llm_category)
+            category_name = _owasp_category_name(finding.owasp_llm_category)
             prompt = (
-                f"{_TAXONOMY_INDEX}\n\n"
-                "This finding has LOG_ONLY strategy meaning the "
-                "vulnerability was found in an external system that "
-                "cannot be directly patched.\n\n"
-                "Based on this specific attack:\n"
-                f"Attack: {attack_excerpt}\n"
-                f"Response: {response_excerpt}\n"
-                f"Category: {category_label}\n\n"
-                "Explain in 2-3 sentences what guardrails the system "
-                "owner should implement to prevent this type of "
-                "attack. Be specific to this exact attack pattern."
+                "You are an LLM security expert.\n"
+                f"A {category_name} attack was found:\n"
+                f"Attack prompt: {finding.attack_prompt[:_PROMPT_EXCERPT_CHARS]}\n"
+                f"Model response: {finding.model_response[:_RESPONSE_EXCERPT_CHARS]}\n"
+                f"OWASP Category: {category_name}\n"
+                "In 2 sentences explain what input guardrail pattern "
+                "would prevent this exact attack."
             )
         else:
             notes_str = " | ".join(result.notes)[:300]
             prompt = (
-                f"{_TAXONOMY_INDEX}\n\n"
-                "This finding has LOG_ONLY strategy meaning the "
-                "vulnerability was found in an external system that "
-                "cannot be directly patched.\n\n"
-                f"Implementation notes: {notes_str}\n\n"
-                "Explain in 2-3 sentences what guardrails the system "
-                "owner should implement to prevent this type of "
-                "attack."
+                "You are an LLM security expert.\n"
+                f"Strategy: {result.strategy} (no runtime patch generated)\n"
+                f"Implementation notes: {notes_str}\n"
+                "In 2 sentences explain what input guardrail pattern "
+                "would prevent this exact attack."
             )
         return self._call(prompt)
 
     def generate_guardrail(self, finding: Finding) -> str | None:
-        """Return a per-attack guardrail pattern, or ``None`` on failure.
+        """Return ONE regex pattern that blocks this exact attack, or ``None``.
 
-        Output is intentionally short and oriented at policy authors
-        — what to add to an input/output filter, not a multi-page
-        threat model.
+        The spec asks for a bare regex line so the output can be
+        dropped straight into a guardrail config. We strip a single
+        leading/trailing line of whitespace from Claude's reply but
+        otherwise return it verbatim — extracting "just the regex"
+        is the caller's job if they need to defend against chatty
+        responses.
         """
         prompt = (
-            f"{_TAXONOMY_INDEX}\n\n"
-            "You are an LLM security engineer authoring a guardrail "
-            "rule for THIS specific incident.\n\n"
-            f"{_attack_context_block(finding)}\n\n"
-            "Propose a concrete guardrail pattern that would block "
-            "this attack. Include:\n"
-            "1. WHERE to enforce (input filter, output filter, "
-            "system prompt, tool-call layer).\n"
-            "2. A precise pattern, regex, or check phrased so an "
-            "engineer can implement it directly.\n"
-            "Keep it under 6 lines total. Avoid generic OWASP advice."
+            "Generate ONE regex pattern that blocks this exact attack:\n"
+            f"Attack prompt: {finding.attack_prompt[:_PROMPT_EXCERPT_CHARS]}\n"
+            "Return ONLY the regex pattern, nothing else.\n"
+            "Example format: repeat.*words.*above"
         )
         return self._call(prompt)
 
     def assess_severity(self, finding: Finding) -> str | None:
-        """Return a 1–2 sentence severity rationale, or ``None``.
+        """Return ONE word: LOW / MEDIUM / HIGH / CRITICAL, or ``None``.
 
-        The parser already attaches a heuristic severity from the
-        attack success rate; this method asks Claude whether the
-        per-incident facts justify a different rating and why.
+        Constrained to a single token so the caller can use it
+        directly as a severity label without parsing prose.
         """
         prompt = (
-            f"{_TAXONOMY_INDEX}\n\n"
-            "You are an LLM security analyst assigning final severity.\n\n"
-            f"{_attack_context_block(finding)}\n\n"
-            "In 1–2 sentences: confirm or revise the parser's "
-            "severity above for THIS specific incident, with a brief "
-            "reason. Use one of: LOW, MEDIUM, HIGH, CRITICAL. Lead "
-            "with the chosen label."
+            "Rate severity of this attack as one of:\n"
+            "LOW, MEDIUM, HIGH, CRITICAL\n"
+            f"Attack: {finding.attack_prompt[:_PROMPT_EXCERPT_CHARS]}\n"
+            f"Response: {finding.model_response[:_RESPONSE_EXCERPT_CHARS]}\n"
+            f"Category: {_owasp_category_name(finding.owasp_llm_category)}\n"
+            "Return ONLY one word: LOW/MEDIUM/HIGH/CRITICAL"
         )
         return self._call(prompt)
 
-    def summarize_scan(self, findings: list[Finding]) -> str | None:
-        """Return a 2-sentence scan-level summary for the security team."""
-        counts: dict[str, int] = {}
+    def summarize_scan(
+        self,
+        findings: list[Finding],
+        target: str | None = None,
+    ) -> str | None:
+        """Return a 2-sentence scan-level summary, or ``None`` on failure.
+
+        ``target`` is the model / system that was scanned (e.g.
+        ``"gpt-2"``). It's optional so existing callers continue to
+        work; when omitted we render the line as ``Target: unknown``
+        so Claude still has a complete template to reason from.
+
+        Categories are auto-derived from the findings using their
+        canonical OWASP names (LLM01 → ``"Prompt Injection"``,
+        etc.) — the spec prompt insists on correct OWASP names only,
+        so we resolve them server-side rather than asking Claude to
+        guess from codes.
+        """
+        category_names: list[str] = []
+        seen: set[str] = set()
         for finding in findings:
-            counts[finding.owasp_llm_category] = (
-                counts.get(finding.owasp_llm_category, 0) + 1
-            )
+            code = finding.owasp_llm_category
+            if code in seen:
+                continue
+            seen.add(code)
+            entry = LLM_TOP_10.get(code)
+            category_names.append(entry.name if entry is not None else code)
+        categories_label = ", ".join(category_names) if category_names else "(none)"
         prompt = (
-            f"Security scan found: {counts}\n"
-            "Summarize in 2 sentences for a security team.\n"
-            "Be direct and actionable."
+            "Summarize this security scan in 2 sentences:\n"
+            f"Target: {target or 'unknown'}\n"
+            f"Findings: {len(findings)} vulnerabilities\n"
+            f"Categories: {categories_label}\n"
+            "Use correct OWASP names only.\n"
+            "Be specific and professional."
         )
         return self._call(prompt)
 
