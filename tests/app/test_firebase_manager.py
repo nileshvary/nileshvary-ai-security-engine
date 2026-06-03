@@ -395,6 +395,48 @@ def test_update_scan_returns_false_when_scan_id_falsy(
     assert fm.update_scan("uid", "", {"x": 1}) is False
 
 
+def test_get_all_scans_returns_empty_when_firebase_disabled() -> None:
+    assert fm.get_all_scans() == []
+
+
+def test_get_all_scans_queries_collection_group_and_attaches_uid(
+    fake_firebase: SimpleNamespace,
+) -> None:
+    """Admin platform-wide history hits a collection-group query on `scans`."""
+    fm.init_firebase(_SECRETS)
+
+    # Build two fake scan documents living under different users.
+    def _make_doc(doc_id: str, owner_uid: str, payload: dict[str, Any]) -> MagicMock:
+        doc = MagicMock(name=f"doc-{doc_id}")
+        doc.id = doc_id
+        doc.to_dict.return_value = payload
+        # reference.parent.parent.id should resolve to the owning user uid.
+        owner_doc = MagicMock()
+        owner_doc.id = owner_uid
+        doc.reference.parent.parent = owner_doc
+        return doc
+
+    docs = [
+        _make_doc("scan-A", "user-1", {"created_at": "2026-06-02", "source": "demo"}),
+        _make_doc("scan-B", "user-2", {"created_at": "2026-06-01", "source": "upload"}),
+    ]
+
+    cg_chain = MagicMock(name="collection_group_chain")
+    cg_chain.order_by.return_value.limit.return_value.stream.return_value = docs
+    fake_firebase.firestore_client.collection_group.return_value = cg_chain
+
+    result = fm.get_all_scans(limit=50)
+
+    fake_firebase.firestore_client.collection_group.assert_called_once_with("scans")
+    cg_chain.order_by.assert_called_once_with("created_at", direction="DESC")
+    cg_chain.order_by.return_value.limit.assert_called_once_with(50)
+
+    assert [r["id"] for r in result] == ["scan-A", "scan-B"]
+    assert [r["user_uid"] for r in result] == ["user-1", "user-2"]
+    assert result[0]["source"] == "demo"
+    assert result[1]["source"] == "upload"
+
+
 def test_scans_this_month_counts_filtered_docs(
     fake_firebase: SimpleNamespace,
 ) -> None:

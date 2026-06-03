@@ -539,6 +539,54 @@ def get_user_scans(uid: str, limit: int = 50) -> list[dict[str, Any]]:
     return out
 
 
+def get_all_scans(limit: int = 100) -> list[dict[str, Any]]:
+    """Return the most recent scans across every user, newest first.
+
+    Used by the admin analytics dashboard to render platform-wide
+    metrics. Issues a single Firestore collection-group query against
+    every ``users/*/scans`` subcollection — requires a collection-group
+    index on the ``created_at`` field (Firebase prompts for it the first
+    time the query runs).
+
+    Each returned record carries the scan document id (``id``) and the
+    owning user uid (``user_uid``) so admin views can attribute rows.
+
+    Args:
+        limit: Maximum scans to return. Defaults to 100.
+
+    Returns:
+        A list of scan dicts ordered by ``created_at`` descending; an
+        empty list when Firebase is not configured or the query failed.
+    """
+    if not is_firebase_ready():
+        return []
+    try:
+        docs = list(
+            _firestore_client()
+            .collection_group(_SCANS_SUBCOLLECTION)
+            .order_by("created_at", direction=_firestore_descending())
+            .limit(limit)
+            .stream()
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Failed to list scans across all users: %s", exc)
+        return []
+    out: list[dict[str, Any]] = []
+    for doc in docs:
+        record = dict(doc.to_dict() or {})
+        record["id"] = doc.id
+        # Each scan lives at users/{uid}/scans/{scan_id}; the parent of
+        # the scan doc's parent collection is the owning user document.
+        try:
+            user_doc = doc.reference.parent.parent
+            if user_doc is not None:
+                record["user_uid"] = user_doc.id
+        except AttributeError:  # pragma: no cover - defensive
+            pass
+        out.append(record)
+    return out
+
+
 def scans_this_month(uid: str) -> int:
     """Count of scans the user has run in the current calendar month."""
     if not is_firebase_ready():

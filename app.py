@@ -61,6 +61,7 @@ from components.voice import (
 from database import (
     FirebaseAuthError,
     create_user,
+    get_all_scans,
     get_init_error,
     get_user,
     get_user_scans,
@@ -2916,7 +2917,19 @@ def _vuln_label_for_owasp(code: str) -> str:
 
 
 def _load_history() -> list[dict[str, Any]]:
-    """Return the authenticated user's Firestore scan history (newest first)."""
+    """Return the active user's Firestore scan history (newest first).
+
+    Admin token users see the platform-wide history (every user's
+    scans), so admin analytics reflects total platform activity rather
+    than the empty per-uid view (admins have no ``user_uid``). Regular
+    users see only their own scans.
+    """
+    if st.session_state.get("is_admin"):
+        try:
+            return list(get_all_scans(limit=100))
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed to load platform-wide scan history: %s", exc)
+            return []
     uid = st.session_state.get("user_uid")
     if not uid:
         return []
