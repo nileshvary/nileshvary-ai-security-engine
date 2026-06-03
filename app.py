@@ -48,6 +48,7 @@ from components.ai_client import RemediAXAI
 from components.api_key_url import decrypt_api_key, encrypt_api_key
 from components.finding_card import (
     render_finding,
+    render_listen_widget,
     render_patch_panel,
     render_tools_panel,
 )
@@ -2804,6 +2805,12 @@ def render_review() -> None:
     ai_client = _get_ai_client()
     render_finding(finding, rem_result, ver_result, ai_client)
 
+    # 🔊 Listen — user-triggered TTS of the pre-written finding script
+    # (Category, Severity, Why dangerous, Why fix works) pulled from
+    # OWASP_CONTENT. Same in Basic and Enhanced mode; no API cost.
+    if st.session_state.tts_enabled:
+        render_listen_widget(finding, idx, total)
+
     is_esc = finding.owasp_llm_category in ESCALATION_CATEGORIES
     approve_label = "✅ Note it" if is_esc else "✅ Approve"
     skip_label = "⏭️ Dismiss" if is_esc else "⏭️ Skip"
@@ -2832,14 +2839,12 @@ def render_review() -> None:
         )
         st.json(finding.raw_data)
 
-    if st.session_state.tts_enabled:
-        speech = (
-            f"Finding {idx + 1} of {total}. "
-            f"{OWASP_CONTENT.get(finding.owasp_llm_category, {}).get('name', finding.owasp_llm_category)}. "
-            f"Severity {finding.severity}."
-        )
-        _maybe_emit_voice(speech)
-    elif st.session_state.voice_enabled:
+    # The per-finding 🔊 Listen widget (above ``render_finding``)
+    # supersedes the old auto-emit short summary — the user clicks
+    # to hear the full pre-written script. We still mount an empty
+    # voice JS blob here when voice commands (microphone) are
+    # enabled, so the recognition listener stays alive across reruns.
+    if st.session_state.voice_enabled and not st.session_state.tts_enabled:
         _maybe_emit_voice("")
 
 

@@ -16,6 +16,10 @@ from __future__ import annotations
 
 import html
 import json
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from integration_bridge.models import Finding
 
 
 _VOICE_COMMANDS: dict[str, str] = {
@@ -40,26 +44,60 @@ _VOICE_COMMANDS: dict[str, str] = {
 }
 
 
-def get_voice_js(text_to_speak: str | None = None, listen: bool = False) -> str:
+def get_voice_js(
+    text_to_speak: str | None = None,
+    listen: bool = False,
+    *,
+    manual_listen_button: bool = False,
+) -> str:
     """Build a self-contained HTML+JS blob for TTS and (optional) STT.
 
     Args:
-        text_to_speak: When provided and non-empty, the page speaks
-            this text immediately on load.
-        listen: When True, the page wires up a microphone button that
-            starts the Web Speech recognition on click.
+        text_to_speak: The text to feed the Web Speech API. Behavior
+            depends on ``manual_listen_button``:
+
+            * ``False`` (default): page speaks immediately on load.
+            * ``True``: speech is gated behind a 🔊 Listen button —
+              nothing is read until the user clicks.
+        listen: When True, the page also wires up a 🎤 microphone
+            button that starts Web Speech recognition for voice
+            commands (approve / skip / view / repeat / etc.).
+        manual_listen_button: When True, suppress auto-speak and
+            render a 🔊 Listen button that the user clicks to hear
+            ``text_to_speak``. Used by the review screen's per-
+            finding listen widget.
 
     Returns:
-        A complete ``<div><style><script>`` blob ready for
+        A complete ``<div><script>`` blob ready for
         ``st.components.v1.html(..., height=...)``.
     """
-    speak_text_json = json.dumps(text_to_speak or "")
-    commands_json = json.dumps(_VOICE_COMMANDS)
+    # json.dumps does NOT escape ``</`` — embedded ``</script>`` in
+    # user-supplied text would break out of the inline <script> tag.
+    # Replace every ``</`` with ``<\/`` (still valid JSON / JS, but
+    # safe inside an HTML <script> block). Apply to every JSON-
+    # encoded value we drop into the template.
+    def _safe_json(value: object) -> str:
+        return json.dumps(value).replace("</", "<\\/")
+
+    speak_text_json = _safe_json(text_to_speak or "")
+    commands_json = _safe_json(_VOICE_COMMANDS)
     listen_flag = "true" if listen else "false"
+    auto_speak_flag = (
+        "true" if (text_to_speak and not manual_listen_button) else "false"
+    )
+    show_listen_button_flag = (
+        "true" if (text_to_speak and manual_listen_button) else "false"
+    )
 
     return f"""
 <div id="remediax-voice" style="font-family: monospace; color: #8b949e; padding: 6px 0;">
   <span id="rx-voice-status">🔈 Voice ready</span>
+  <button id="rx-listen-btn" type="button"
+          style="margin-left: 12px; background:#0d1117; color:#00ff88;
+                 border:1px solid #00ff88; border-radius:4px; padding:4px 10px;
+                 cursor:pointer; font-weight:600; display:none;">
+    🔊 Listen
+  </button>
   <button id="rx-mic-btn" type="button"
           style="margin-left: 12px; background:#0d1117; color:#00d4ff;
                  border:1px solid #00d4ff; border-radius:4px; padding:4px 10px;
@@ -72,7 +110,10 @@ def get_voice_js(text_to_speak: str | None = None, listen: bool = False) -> str:
   const SPEAK_TEXT = {speak_text_json};
   const COMMANDS = {commands_json};
   const SHOULD_LISTEN = {listen_flag};
+  const AUTO_SPEAK = {auto_speak_flag};
+  const SHOW_LISTEN_BTN = {show_listen_button_flag};
   const statusEl = document.getElementById("rx-voice-status");
+  const listenBtn = document.getElementById("rx-listen-btn");
   const micBtn = document.getElementById("rx-mic-btn");
 
   function speak(text) {{
@@ -131,13 +172,23 @@ def get_voice_js(text_to_speak: str | None = None, listen: bool = False) -> str:
     }}
   }}
 
-  if (SPEAK_TEXT) {{
+  // Auto-speak on load (legacy behavior — used by complete /
+  // remediation-complete screens that emit a short status string).
+  if (SPEAK_TEXT && AUTO_SPEAK) {{
     if (window.speechSynthesis &&
         window.speechSynthesis.getVoices().length === 0) {{
       window.speechSynthesis.onvoiceschanged = () => speak(SPEAK_TEXT);
     }} else {{
       speak(SPEAK_TEXT);
     }}
+  }}
+
+  // Manual 🔊 Listen button — used by per-finding review widgets
+  // so the user controls when (and whether) the pre-written content
+  // gets read aloud.
+  if (SPEAK_TEXT && SHOW_LISTEN_BTN) {{
+    listenBtn.style.display = "inline-block";
+    listenBtn.addEventListener("click", () => speak(SPEAK_TEXT));
   }}
 
   const sr = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -148,6 +199,50 @@ def get_voice_js(text_to_speak: str | None = None, listen: bool = False) -> str:
 }})();
 </script>
 """
+
+
+def build_finding_speech(
+    finding: Finding,
+    idx: int,
+    total: int,
+) -> str:
+    """Return the pre-written TTS script for one finding.
+
+    Pulled entirely from ``components.owasp_content.OWASP_CONTENT`` so
+    the same text is read in Basic mode AND Enhanced mode — no Claude
+    call, no API cost. Matches the product-spec script verbatim:
+
+        Finding {n} of {total}. Category: {name}. Severity: {sev}.
+        Why this is dangerous: {danger_explanation}
+        Why this fix works: {fix_explanation}
+
+    Args:
+        finding: The ``Finding`` whose category drives the lookup.
+        idx: Zero-based index of this finding in the review list.
+            Surfaced to the user as ``idx + 1``.
+        total: Total finding count in the review.
+
+    Returns:
+        A single string ready to hand to ``get_voice_js`` /
+        ``escape_for_speech``.
+    """
+    # Local import to keep this module standalone for tests that
+    # don't need the heavyweight owasp_content load path.
+    from components.owasp_content import OWASP_CONTENT
+
+    code = finding.owasp_llm_category
+    content = OWASP_CONTENT.get(code, {})
+    name = content.get("name") or code
+    danger = (content.get("danger_explanation") or "").strip()
+    fix = (content.get("fix_explanation") or "").strip()
+
+    return (
+        f"Finding {idx + 1} of {total}. "
+        f"Category: {name}. "
+        f"Severity: {finding.severity}.\n"
+        f"Why this is dangerous: {danger}\n"
+        f"Why this fix works: {fix}"
+    )
 
 
 def consume_voice_command() -> str | None:
