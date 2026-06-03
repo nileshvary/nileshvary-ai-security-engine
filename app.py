@@ -1451,29 +1451,51 @@ def render_sidebar() -> None:
 
             if st.session_state.api_mode:
                 st.markdown("**Claude API key**")
-                key_input = st.text_input(
-                    "API key",
-                    value=st.session_state.api_key or "",
-                    type="password",
-                    label_visibility="collapsed",
-                )
-                save_col, remove_col = st.columns(2)
-                if save_col.button("💾 Save", use_container_width=True):
-                    st.session_state.api_key = key_input.strip() or None
-                    st.session_state.ai_client = None  # force rebuild
-                    st.toast(
-                        "Key saved." if st.session_state.api_key else "Key cleared."
+                if st.session_state.api_key:
+                    # SAVED state — no input, no dots, no Save button.
+                    # Just an "active" badge, the reassurance line, and
+                    # a single Remove button.
+                    st.markdown(
+                        '<div style="color:#00ff88;font-weight:600;'
+                        'margin:6px 0 2px;">✅ Claude API key active</div>',
+                        unsafe_allow_html=True,
                     )
-                if remove_col.button("🗑️ Remove", use_container_width=True):
-                    st.session_state.api_key = None
-                    st.session_state.ai_client = None
-                    st.toast("Key removed.")
-                st.caption(
-                    "✅ Key saved"
-                    if st.session_state.api_key
-                    else "❌ No key — basic mode"
-                )
-                st.caption("Your key — you pay. Never logged or shared.")
+                    st.caption("Your key is encrypted and never shared")
+                    if st.button(
+                        "🗑️ Remove key",
+                        use_container_width=True,
+                        key="claude-key-remove",
+                    ):
+                        st.session_state.api_key = None
+                        st.session_state.ai_client = None
+                        st.toast("Key removed.")
+                        st.rerun()
+                else:
+                    # UNSAVED state — input + Save button only. The
+                    # rerun after a successful save flips the UI into
+                    # the saved state on the next frame.
+                    st.caption("Enter your Claude API key")
+                    key_input = st.text_input(
+                        "API key",
+                        value="",
+                        type="password",
+                        label_visibility="collapsed",
+                        key="claude-key-input",
+                    )
+                    if st.button(
+                        "💾 Save",
+                        use_container_width=True,
+                        key="claude-key-save",
+                        type="primary",
+                    ):
+                        cleaned = key_input.strip()
+                        if cleaned:
+                            st.session_state.api_key = cleaned
+                            st.session_state.ai_client = None
+                            st.toast("Key saved.")
+                            st.rerun()
+                        else:
+                            st.toast("Enter a key to save.")
 
         st.divider()
         st.markdown("**Voice features**")
