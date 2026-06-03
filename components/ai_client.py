@@ -18,7 +18,7 @@ import logging
 
 from integration_bridge.models import Finding
 from integration_bridge.owasp_taxonomy import AGENTIC_TOP_10, LLM_TOP_10
-from remediation_engine.models import RemediationResult
+from remediation_engine.models import RemediationResult, RemediationStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -149,13 +149,26 @@ class RemediAXAI:
         result: RemediationResult,
         finding: Finding | None = None,
     ) -> str | None:
-        """Why does this fix work for THIS attack? 2 sentences, or ``None``.
+        """Why does this fix work for THIS attack? 2-3 sentences, or ``None``.
 
-        When ``finding`` is supplied the prompt includes the original
-        attack context so Claude can explain the fix specifically.
+        Two branches:
+
+        * **LOG_ONLY strategy** — there is no runtime patch to
+          explain (the vulnerability lives in an external system the
+          remediator can't touch), so asking Claude "why does this
+          fix work" makes it ask clarifying questions. Instead, the
+          prompt asks Claude to recommend guardrails the system owner
+          should implement against this specific attack pattern.
+        * **All other strategies** — explain why the generated patch
+          blocks the specific attack.
+
         Backward-compatible: callers that only have the
-        ``RemediationResult`` (existing code path) still work.
+        ``RemediationResult`` (no finding) still get a response, just
+        without the per-attack context.
         """
+        if result.strategy == RemediationStrategy.LOG_ONLY:
+            return self._explain_log_only(result, finding)
+
         notes_str = " | ".join(result.notes)[:300]
         context = (
             f"{_attack_context_block(finding)}\n\n"
@@ -172,6 +185,49 @@ class RemediAXAI:
             "specific attack above. Be practical and tied to the "
             "actual exploit."
         )
+        return self._call(prompt)
+
+    def _explain_log_only(
+        self,
+        result: RemediationResult,
+        finding: Finding | None,
+    ) -> str | None:
+        """Recommend guardrails for a LOG_ONLY (no runtime patch) finding.
+
+        Uses the product-spec prompt verbatim when a finding is
+        supplied. When no finding is available (legacy call path)
+        falls back to the implementation notes so Claude still has
+        something concrete to anchor on.
+        """
+        if finding is not None:
+            attack_excerpt = finding.attack_prompt[:_PROMPT_EXCERPT_CHARS]
+            response_excerpt = finding.model_response[:_RESPONSE_EXCERPT_CHARS]
+            category_label = _owasp_category_name(finding.owasp_llm_category)
+            prompt = (
+                f"{_TAXONOMY_INDEX}\n\n"
+                "This finding has LOG_ONLY strategy meaning the "
+                "vulnerability was found in an external system that "
+                "cannot be directly patched.\n\n"
+                "Based on this specific attack:\n"
+                f"Attack: {attack_excerpt}\n"
+                f"Response: {response_excerpt}\n"
+                f"Category: {category_label}\n\n"
+                "Explain in 2-3 sentences what guardrails the system "
+                "owner should implement to prevent this type of "
+                "attack. Be specific to this exact attack pattern."
+            )
+        else:
+            notes_str = " | ".join(result.notes)[:300]
+            prompt = (
+                f"{_TAXONOMY_INDEX}\n\n"
+                "This finding has LOG_ONLY strategy meaning the "
+                "vulnerability was found in an external system that "
+                "cannot be directly patched.\n\n"
+                f"Implementation notes: {notes_str}\n\n"
+                "Explain in 2-3 sentences what guardrails the system "
+                "owner should implement to prevent this type of "
+                "attack."
+            )
         return self._call(prompt)
 
     def generate_guardrail(self, finding: Finding) -> str | None:

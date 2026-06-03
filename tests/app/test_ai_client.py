@@ -132,6 +132,79 @@ def test_explain_fix_with_finding_includes_attack_context(
 
 
 # ---------------------------------------------------------------------------
+# explain_fix LOG_ONLY branch — recommend guardrails, not patch explanation
+# ---------------------------------------------------------------------------
+
+
+def test_explain_fix_log_only_uses_guardrail_recommendation_prompt(
+    ai_client: RemediAXAI,
+) -> None:
+    """LOG_ONLY findings must NOT trigger the 'why this fix blocks' prompt."""
+    finding = make_finding(
+        "LLM03",
+        attack_prompt="exploit a backdoor in the supply chain model",
+        model_response="model behaves abnormally on trigger phrase",
+    )
+    result_obj = make_remediation_result("LLM03")  # default strategy is LOG_ONLY
+    assert str(result_obj.strategy) == "log_only"
+
+    ai_client.client.messages.create.return_value = _fake_anthropic_response(
+        "Implement signed-model verification at deploy time..."
+    )
+    out = ai_client.explain_fix(result_obj, finding=finding)
+    assert out is not None
+
+    payload = _last_prompt(ai_client)
+    # Spec-mandated opener:
+    assert (
+        "This finding has LOG_ONLY strategy meaning the vulnerability "
+        "was found in an external system that cannot be directly "
+        "patched." in payload
+    )
+    # Spec-mandated section labels:
+    assert "Based on this specific attack:" in payload
+    assert "Attack: exploit a backdoor in the supply chain model" in payload
+    assert "Response: model behaves abnormally on trigger phrase" in payload
+    assert "Category: LLM03" in payload  # the OWASP code at minimum
+    # Spec-mandated ask:
+    assert "what guardrails the system owner should implement" in payload
+    assert "Be specific to this exact attack pattern" in payload
+    # AND it must NOT carry the patch-explanation framing.
+    assert "why this fix BLOCKS" not in payload
+    assert "Remediation strategy" not in payload
+    assert "Implementation notes" not in payload
+
+
+def test_explain_fix_log_only_without_finding_still_uses_guardrail_prompt(
+    ai_client: RemediAXAI,
+) -> None:
+    """Legacy call path (no finding) still branches into the guardrail prompt."""
+    result_obj = make_remediation_result("LLM04")  # LOG_ONLY
+    ai_client.explain_fix(result_obj)
+    payload = _last_prompt(ai_client)
+    assert "LOG_ONLY strategy" in payload
+    assert "what guardrails" in payload
+    # Without a finding we fall back to the notes for context.
+    assert "Implementation notes:" in payload
+
+
+def test_explain_fix_non_log_only_strategy_uses_original_patch_prompt(
+    ai_client: RemediAXAI,
+) -> None:
+    """HARDEN / SANITIZE / GUARDRAIL still ask 'why this fix BLOCKS the attack'."""
+    finding = make_finding("LLM01")
+    result_obj = make_remediation_result("LLM01")  # HARDEN
+    assert str(result_obj.strategy) == "harden"
+
+    ai_client.explain_fix(result_obj, finding=finding)
+    payload = _last_prompt(ai_client)
+    # The original patch-focused framing is preserved for non-LOG_ONLY.
+    assert "why this fix BLOCKS" in payload
+    # And the LOG_ONLY opener is absent.
+    assert "LOG_ONLY strategy" not in payload
+
+
+# ---------------------------------------------------------------------------
 # generate_guardrail — new method
 # ---------------------------------------------------------------------------
 
