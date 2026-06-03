@@ -18,7 +18,7 @@ import shutil
 import sys
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,7 @@ _SRC_DIR = Path(__file__).parent / "src"
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
+import extra_streamlit_components as stx
 import streamlit as st
 
 from admin.panel import render_admin_panel
@@ -40,6 +41,12 @@ from auth.session_manager import (
     is_admin,
     logout,
     reset_to_landing,
+)
+from auth.session_persistence import (
+    SESSION_TTL_SECONDS,
+    read_session_secret,
+    sign_session,
+    verify_session,
 )
 from auth.token_manager import TokenManager
 from components.ai_client import RemediAXAI
@@ -91,6 +98,7 @@ _RUNS_ROOT = Path("_remediax_runs")
 _GITHUB_URL = "https://github.com/nileshvary/nileshvary-ai-security-engine"
 _REMEMBER_PARAM = "t"
 _SCREEN_PARAM = "p"
+_FB_SESSION_COOKIE = "remediax_fb_session"
 _RESTORABLE_SCREENS: frozenset[str] = frozenset(
     {
         "landing",
@@ -140,6 +148,72 @@ def _clear_remembered_token() -> None:
             del st.query_params[_REMEMBER_PARAM]
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Failed to clear remember-me token from URL: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Firebase remember-me — HMAC-signed cookie, 24h TTL
+# ---------------------------------------------------------------------------
+
+
+def _get_cookie_manager() -> stx.CookieManager:
+    """Return a per-session CookieManager instance.
+
+    extra-streamlit-components instantiates a JS widget on construction
+    and complains if more than one CookieManager exists per script
+    run, so we stash a single instance in ``st.session_state``. The
+    first call per session also requires a JS round-trip before
+    cookies become readable; callers must tolerate ``None`` on the
+    initial frame.
+    """
+    cm = st.session_state.get("_cookie_manager")
+    if cm is None:
+        cm = stx.CookieManager(key="remediax_cookie_manager")
+        st.session_state["_cookie_manager"] = cm
+    return cm
+
+
+def _persist_firebase_session(uid: str, email: str) -> None:
+    """Set the signed remember-me cookie after a successful Firebase login.
+
+    No-ops when ``st.secrets["session"]["secret"]`` is missing so the
+    feature degrades gracefully on deploys that have not configured a
+    session secret yet (the user will be logged out on refresh, same
+    as today).
+    """
+    secret = read_session_secret(_safe_secrets())
+    if not secret:
+        logger.info(
+            "No [session].secret configured; skipping Firebase cookie persistence"
+        )
+        return
+    try:
+        token = sign_session(uid, email, secret=secret)
+        _get_cookie_manager().set(
+            _FB_SESSION_COOKIE,
+            token,
+            expires_at=datetime.utcnow() + timedelta(seconds=SESSION_TTL_SECONDS),
+            key="rmx-set-fb-cookie",
+        )
+    except Exception as exc:  # pragma: no cover - cookie write surface
+        logger.warning("Failed to persist Firebase session cookie: %s", exc)
+
+
+def _clear_firebase_session_cookie() -> None:
+    """Delete the remember-me cookie on logout. No-op if absent."""
+    try:
+        cm = _get_cookie_manager()
+        if cm.get(_FB_SESSION_COOKIE):
+            cm.delete(_FB_SESSION_COOKIE, key="rmx-del-fb-cookie")
+    except Exception as exc:  # pragma: no cover - cookie delete surface
+        logger.warning("Failed to clear Firebase session cookie: %s", exc)
+
+
+def _safe_secrets() -> Any:
+    """Return ``st.secrets`` or ``None`` if reading raises."""
+    try:
+        return st.secrets
+    except Exception:  # pragma: no cover - defensive
+        return None
 
 
 def _read_query_screen() -> str | None:
@@ -291,6 +365,62 @@ def _attempt_auto_login() -> None:
         # screen renders cleanly and refresh does not re-trigger lockout.
         _clear_remembered_token()
         _clear_screen_param()
+
+
+def _attempt_firebase_cookie_login() -> None:
+    """If a signed remember-me cookie is present, revalidate and log in.
+
+    Companion to ``_attempt_auto_login`` for Firebase email/password
+    users. The cookie is HMAC-signed and TTL-bounded (24h), so a
+    successful ``verify_session`` is enough to trust the uid + email
+    claims. We then refetch the Firestore profile so the user's
+    current tier is reflected (tier changes since the cookie was
+    issued must be honored). Skipped when no session secret is set —
+    in that case the feature degrades to "no remember-me".
+    """
+    if st.session_state.authenticated:
+        return
+    if st.session_state.get("fb_cookie_login_tried"):
+        return
+    secret = read_session_secret(_safe_secrets())
+    if not secret:
+        return
+    st.session_state.fb_cookie_login_tried = True
+    try:
+        raw = _get_cookie_manager().get(_FB_SESSION_COOKIE)
+    except Exception as exc:  # pragma: no cover - cookie read surface
+        logger.warning("Failed to read Firebase session cookie: %s", exc)
+        return
+    if not raw:
+        return
+    payload = verify_session(str(raw), secret=secret)
+    if payload is None:
+        # Tampered / expired / wrong secret — drop the bad cookie so
+        # repeated reruns don't keep checking it.
+        try:
+            _get_cookie_manager().delete(
+                _FB_SESSION_COOKIE, key="rmx-del-fb-cookie-bad"
+            )
+        except Exception as exc:  # pragma: no cover - cookie delete surface
+            logger.warning("Failed to drop invalid Firebase cookie: %s", exc)
+        return
+    uid = payload["uid"]
+    email = payload["email"]
+    # Refetch the profile so tier upgrades since the cookie was issued
+    # are honored. If Firestore is offline or the user was deleted, we
+    # fall back to the cookie's email claim and the default tier.
+    profile = get_user(uid) or {}
+    _activate_firebase_session(
+        {
+            "uid": uid,
+            "email": email,
+            "name": profile.get("name") or email.split("@")[0],
+            "tier": profile.get("tier") or "basic",
+        }
+    )
+    desired = _read_query_screen()
+    st.session_state.screen = desired or "landing"
+    st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -1119,6 +1249,7 @@ def _do_logout() -> None:
     * Always triggers a rerun so the redirect takes effect immediately.
     """
     _clear_remembered_token()
+    _clear_firebase_session_cookie()
     _clear_screen_param()
     logout()
     st.rerun()
@@ -1445,11 +1576,13 @@ def _render_login_tab() -> None:
             return
         _activate_firebase_session(profile)
         st.success(f"Welcome back, {profile.get('name') or email}!")
-        if remember_me:
-            # Note: Firebase id_token is short-lived; we do NOT persist
-            # email/password to URL. Remember-me is best-effort and only
-            # keeps the session alive until the tab closes.
-            pass
+        if remember_me and profile.get("uid"):
+            # HMAC-signed cookie with 24h TTL. Survives page refresh
+            # without exposing the password — the cookie carries only
+            # uid + email + signature.
+            _persist_firebase_session(
+                str(profile["uid"]), profile.get("email") or email.strip()
+            )
         st.rerun()
 
     # Google Sign In — stub for v1.0
@@ -1514,6 +1647,14 @@ def _render_signup_tab() -> None:
             )
             return
         _activate_firebase_session(login_profile)
+        # New signups always get a remember-me cookie — the user just
+        # created the account, refusing to persist would log them out
+        # on the next refresh and re-create the bug we are fixing.
+        if login_profile.get("uid"):
+            _persist_firebase_session(
+                str(login_profile["uid"]),
+                login_profile.get("email") or email.strip(),
+            )
         # Fire-and-forget admin notification.
         try:
             send_admin_notification(
@@ -3360,6 +3501,12 @@ def main() -> None:
     # when the user is already authenticated, no token is remembered,
     # or we have already tried this session.
     _attempt_auto_login()
+
+    # Then try the HMAC-signed Firebase remember-me cookie. Runs once
+    # per session (guarded by session_state); silent no-op when the
+    # cookie is missing, expired, tampered, or no session secret is
+    # configured for this deploy.
+    _attempt_firebase_cookie_login()
 
     # Only authenticated users (Firebase or admin token) can reach the
     # app. Everyone else is forced onto the access screen.
