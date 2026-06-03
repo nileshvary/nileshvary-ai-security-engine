@@ -45,6 +45,7 @@ from auth.session_manager import (
 )
 from auth.token_manager import TokenManager
 from components.ai_client import RemediAXAI
+from components.api_key_url import decode_api_key, encode_api_key
 from components.finding_card import (
     render_finding,
     render_patch_panel,
@@ -107,6 +108,7 @@ _SCREEN_PARAM = "p"
 _FB_EMAIL_PARAM = "e"
 _FB_UID_PARAM = "uid"
 _FB_TIER_PARAM = "tier"
+_API_KEY_PARAM = "ak"
 _RESTORABLE_SCREENS: frozenset[str] = frozenset(
     {
         "landing",
@@ -367,6 +369,79 @@ def _attempt_auto_login() -> None:
         # screen renders cleanly and refresh does not re-trigger lockout.
         _clear_remembered_token()
         _clear_screen_param()
+
+
+# ---------------------------------------------------------------------------
+# Claude API key remember-me — base64 in ``?ak=``
+# ---------------------------------------------------------------------------
+#
+# SECURITY: this persists an Anthropic API key in the URL. The
+# encoding is URL-safe base64 — obfuscation only, NOT encryption.
+# Anyone who can read the URL (browser history, server logs, HTTP
+# Referer headers, copy-paste, screenshot, shared link) can recover
+# the raw key with a one-line decode. The "Your key never touches
+# RemediAX servers" claim on the scanner educational card is FALSE
+# while ``?ak=`` is in use — the Streamlit server logs every request
+# URL, including the query string.
+#
+# We surface a yellow warning in the sidebar whenever a key is
+# persisted so the user is reminded not to share the URL.
+
+
+def _persist_api_key_to_url(raw_key: str) -> None:
+    """Base64-encode ``raw_key`` and write it to ``?ak=``."""
+    encoded = encode_api_key(raw_key)
+    if not encoded:
+        return
+    try:
+        st.query_params[_API_KEY_PARAM] = encoded
+        logger.info("Claude API key persisted to ?ak= (len=%d encoded)", len(encoded))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to persist API key to URL: %s", exc)
+
+
+def _clear_api_key_from_url() -> None:
+    """Remove ``?ak=`` from the URL (no-op if not present)."""
+    try:
+        if _API_KEY_PARAM in st.query_params:
+            del st.query_params[_API_KEY_PARAM]
+            logger.info("Claude API key cleared from URL")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to clear API key from URL: %s", exc)
+
+
+def _attempt_api_key_url_restore() -> None:
+    """If ``?ak=`` is present, decode and install the key into session state.
+
+    Runs once per session (guarded by ``api_key_url_restore_tried``).
+    Decode failures strip the bad param so subsequent reruns don't
+    keep tripping the same failure. On success we also flip
+    ``api_mode`` to True so the user lands back in Enhanced mode
+    without having to toggle it themselves.
+    """
+    if st.session_state.get("api_key_url_restore_tried"):
+        return
+    st.session_state.api_key_url_restore_tried = True
+    if st.session_state.get("api_key"):
+        # Already restored via session state (e.g. fresh save this
+        # session). Nothing to do.
+        return
+    encoded = _read_query_param(_API_KEY_PARAM)
+    if not encoded:
+        return
+    decoded = decode_api_key(encoded)
+    if not decoded:
+        logger.warning("?ak= decode failed; stripping invalid param")
+        _clear_api_key_from_url()
+        return
+    st.session_state.api_key = decoded
+    st.session_state.api_mode = True
+    # Force the cached AI client to be rebuilt with the restored key.
+    st.session_state.ai_client = None
+    logger.info(
+        "Claude API key restored from ?ak= (decoded len=%d); api_mode -> True",
+        len(decoded),
+    )
 
 
 def _attempt_firebase_url_auto_login() -> None:
@@ -1447,20 +1522,35 @@ def render_sidebar() -> None:
                 index=1 if st.session_state.api_mode else 0,
                 label_visibility="collapsed",
             )
-            st.session_state.api_mode = mode.startswith("Enhanced")
+            new_api_mode = mode.startswith("Enhanced")
+            if not new_api_mode and st.session_state.api_mode:
+                # Toggled from Enhanced -> Basic. Clear ?ak= too so
+                # the next refresh doesn't auto-restore Enhanced and
+                # contradict the user's just-expressed preference.
+                _clear_api_key_from_url()
+            st.session_state.api_mode = new_api_mode
 
             if st.session_state.api_mode:
                 st.markdown("**Claude API key**")
                 if st.session_state.api_key:
                     # SAVED state — no input, no dots, no Save button.
-                    # Just an "active" badge, the reassurance line, and
-                    # a single Remove button.
+                    # The key is also persisted to ``?ak=`` so it
+                    # survives a refresh; surface the URL-leakage
+                    # caveat right next to the "active" badge so the
+                    # user is not misled about how the key is stored.
                     st.markdown(
                         '<div style="color:#00ff88;font-weight:600;'
                         'margin:6px 0 2px;">✅ Claude API key active</div>',
                         unsafe_allow_html=True,
                     )
-                    st.caption("Your key is encrypted and never shared")
+                    st.markdown(
+                        '<div style="background:#3a2a00;border-left:3px solid '
+                        "#ffaa00;color:#ffd166;padding:6px 10px;border-radius:4px;"
+                        'margin:6px 0;font-size:0.78rem;line-height:1.35;">'
+                        "⚠️ <b>API key visible in URL</b> — do not share "
+                        "this browser URL with others.</div>",
+                        unsafe_allow_html=True,
+                    )
                     if st.button(
                         "🗑️ Remove key",
                         use_container_width=True,
@@ -1468,12 +1558,15 @@ def render_sidebar() -> None:
                     ):
                         st.session_state.api_key = None
                         st.session_state.ai_client = None
+                        st.session_state.api_mode = False
+                        _clear_api_key_from_url()
                         st.toast("Key removed.")
                         st.rerun()
                 else:
                     # UNSAVED state — input + Save button only. The
                     # rerun after a successful save flips the UI into
-                    # the saved state on the next frame.
+                    # the saved state on the next frame and writes the
+                    # key into ``?ak=`` so it survives a refresh.
                     st.caption("Enter your Claude API key")
                     key_input = st.text_input(
                         "API key",
@@ -1492,6 +1585,7 @@ def render_sidebar() -> None:
                         if cleaned:
                             st.session_state.api_key = cleaned
                             st.session_state.ai_client = None
+                            _persist_api_key_to_url(cleaned)
                             st.toast("Key saved.")
                             st.rerun()
                         else:
@@ -4137,6 +4231,12 @@ def main() -> None:
     # docstring on _attempt_firebase_url_auto_login for the security
     # tradeoffs.
     _attempt_firebase_url_auto_login()
+
+    # Restore the Claude API key from ``?ak=`` (base64-encoded) so
+    # Enhanced mode survives a page refresh. See the long-form
+    # security comment above the helpers — this puts the key in the
+    # URL, which is a real trade-off the user has accepted.
+    _attempt_api_key_url_restore()
 
     # Only authenticated users (Firebase or admin token) can reach the
     # app. Everyone else is forced onto the access screen.
