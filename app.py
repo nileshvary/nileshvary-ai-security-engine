@@ -175,15 +175,18 @@ def _get_cookie_manager() -> stx.CookieManager:
 def _persist_firebase_session(uid: str, email: str) -> None:
     """Set the signed remember-me cookie after a successful Firebase login.
 
-    No-ops when ``st.secrets["session"]["secret"]`` is missing so the
-    feature degrades gracefully on deploys that have not configured a
-    session secret yet (the user will be logged out on refresh, same
-    as today).
+    Returns silently when ``st.secrets["session"]["secret"]`` is
+    missing; warns loudly via the logger so the operator can spot a
+    misconfiguration. Cookie persistence requires CookieManager to
+    have mounted on a previous rerun, which we ensure by calling
+    ``_get_cookie_manager()`` at the very top of ``main``.
     """
     secret = read_session_secret(_safe_secrets())
     if not secret:
-        logger.info(
-            "No [session].secret configured; skipping Firebase cookie persistence"
+        logger.warning(
+            "REMEMBER-ME DISABLED: [session].secret is not configured in "
+            ".streamlit/secrets.toml. Add a `[session]` section with a "
+            "`secret = \"<random>\"` line and restart."
         )
         return
     try:
@@ -193,6 +196,12 @@ def _persist_firebase_session(uid: str, email: str) -> None:
             token,
             expires_at=datetime.utcnow() + timedelta(seconds=SESSION_TTL_SECONDS),
             key="rmx-set-fb-cookie",
+        )
+        logger.info(
+            "Firebase remember-me cookie SET for uid=%s email=%s (TTL=%ds)",
+            uid,
+            email,
+            SESSION_TTL_SECONDS,
         )
     except Exception as exc:  # pragma: no cover - cookie write surface
         logger.warning("Failed to persist Firebase session cookie: %s", exc)
@@ -204,6 +213,7 @@ def _clear_firebase_session_cookie() -> None:
         cm = _get_cookie_manager()
         if cm.get(_FB_SESSION_COOKIE):
             cm.delete(_FB_SESSION_COOKIE, key="rmx-del-fb-cookie")
+            logger.info("Firebase remember-me cookie CLEARED")
     except Exception as exc:  # pragma: no cover - cookie delete surface
         logger.warning("Failed to clear Firebase session cookie: %s", exc)
 
@@ -370,45 +380,56 @@ def _attempt_auto_login() -> None:
 def _attempt_firebase_cookie_login() -> None:
     """If a signed remember-me cookie is present, revalidate and log in.
 
-    Companion to ``_attempt_auto_login`` for Firebase email/password
-    users. The cookie is HMAC-signed and TTL-bounded (24h), so a
-    successful ``verify_session`` is enough to trust the uid + email
-    claims. We then refetch the Firestore profile so the user's
-    current tier is reflected (tier changes since the cookie was
-    issued must be honored). Skipped when no session secret is set —
-    in that case the feature degrades to "no remember-me".
+    extra-streamlit-components' ``CookieManager.get_all`` returns its
+    ``default={}`` value during the first rerun (JS round-trip hasn't
+    landed yet) — there is no first-class "ready" signal that
+    distinguishes "no cookies" from "still loading". We therefore run
+    this function on EVERY rerun while the user is unauthenticated,
+    refreshing the cookie cache each time. The cookie value becomes
+    readable on the rerun that follows the JS round-trip; by rerun 2
+    or 3 we either have it or we know we never will.
     """
     if st.session_state.authenticated:
         return
-    if st.session_state.get("fb_cookie_login_tried"):
-        return
     secret = read_session_secret(_safe_secrets())
     if not secret:
+        # Already warned about once in _persist_firebase_session; quiet
+        # here to avoid log spam on every rerun.
         return
-    st.session_state.fb_cookie_login_tried = True
     try:
-        raw = _get_cookie_manager().get(_FB_SESSION_COOKIE)
+        cm = _get_cookie_manager()
+        all_cookies = cm.get_all() or {}
     except Exception as exc:  # pragma: no cover - cookie read surface
-        logger.warning("Failed to read Firebase session cookie: %s", exc)
+        logger.warning("Cookie auto-login: get_all raised %s", exc)
         return
+    raw = all_cookies.get(_FB_SESSION_COOKIE)
+    logger.info(
+        "Cookie auto-login: get_all returned %d cookie(s); %s %s",
+        len(all_cookies),
+        _FB_SESSION_COOKIE,
+        f"present (len={len(raw)})" if raw else "ABSENT",
+    )
     if not raw:
         return
     payload = verify_session(str(raw), secret=secret)
     if payload is None:
-        # Tampered / expired / wrong secret — drop the bad cookie so
-        # repeated reruns don't keep checking it.
+        logger.warning(
+            "Cookie auto-login: verify_session FAILED (tampered / expired "
+            "/ wrong secret) — dropping cookie"
+        )
         try:
-            _get_cookie_manager().delete(
-                _FB_SESSION_COOKIE, key="rmx-del-fb-cookie-bad"
-            )
+            cm.delete(_FB_SESSION_COOKIE, key="rmx-del-fb-cookie-bad")
         except Exception as exc:  # pragma: no cover - cookie delete surface
             logger.warning("Failed to drop invalid Firebase cookie: %s", exc)
         return
     uid = payload["uid"]
     email = payload["email"]
-    # Refetch the profile so tier upgrades since the cookie was issued
-    # are honored. If Firestore is offline or the user was deleted, we
-    # fall back to the cookie's email claim and the default tier.
+    logger.info(
+        "Cookie auto-login: verify OK uid=%s email=%s issued_at=%d",
+        uid,
+        email,
+        payload["issued_at"],
+    )
     profile = get_user(uid) or {}
     _activate_firebase_session(
         {
@@ -3496,6 +3517,13 @@ def main() -> None:
     _bootstrap_admin_token_from_secrets()
 
     initialize_state()
+
+    # Mount the cookie manager as the very first Streamlit widget so
+    # its JS frontend has the longest possible window to complete the
+    # cookie read round-trip before any auth check or screen render
+    # runs. Required for both the auto-login path (reads the cookie)
+    # and the login submit path (writes it before rerun).
+    _get_cookie_manager()
 
     # Best-effort auto-login from the ``?t=`` URL parameter. No-ops
     # when the user is already authenticated, no token is remembered,
