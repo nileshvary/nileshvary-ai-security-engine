@@ -337,10 +337,62 @@ def test_set_user_tier_persists_to_firestore(
 # ---------------------------------------------------------------------------
 
 
-def test_save_scan_writes_to_firestore(fake_firebase: SimpleNamespace) -> None:
+def test_save_scan_writes_to_firestore_and_returns_id(
+    fake_firebase: SimpleNamespace,
+) -> None:
     fm.init_firebase(_SECRETS)
-    assert fm.save_scan("uid-1", {"source": "demo"}) is True
+    doc_ref = MagicMock()
+    doc_ref.id = "auto-id-123"
+    fake_firebase.firestore_client.collection.return_value.document.return_value.collection.return_value.add.return_value = (
+        None,
+        doc_ref,
+    )
+    scan_id = fm.save_scan("uid-1", {"source": "demo"})
+    assert scan_id == "auto-id-123"
     fake_firebase.firestore_client.collection.assert_any_call("users")
+
+
+def test_save_scan_with_explicit_scan_id_uses_set_merge(
+    fake_firebase: SimpleNamespace,
+) -> None:
+    fm.init_firebase(_SECRETS)
+    result = fm.save_scan(
+        "uid-1", {"source": "demo"}, scan_id="my-scan-id"
+    )
+    assert result == "my-scan-id"
+    chain = (
+        fake_firebase.firestore_client.collection.return_value
+        .document.return_value.collection.return_value
+    )
+    chain.document.assert_called_with("my-scan-id")
+
+
+def test_save_scan_returns_none_when_firebase_disabled() -> None:
+    assert fm.save_scan("uid", {"x": 1}) is None
+
+
+def test_update_scan_merges_into_existing_doc(
+    fake_firebase: SimpleNamespace,
+) -> None:
+    fm.init_firebase(_SECRETS)
+    assert fm.update_scan("uid-1", "scan-42", {"status": "completed"}) is True
+    chain = (
+        fake_firebase.firestore_client.collection.return_value
+        .document.return_value.collection.return_value
+        .document.return_value
+    )
+    chain.set.assert_called_with({"status": "completed"}, merge=True)
+
+
+def test_update_scan_returns_false_when_firebase_disabled() -> None:
+    assert fm.update_scan("uid", "scan", {"x": 1}) is False
+
+
+def test_update_scan_returns_false_when_scan_id_falsy(
+    fake_firebase: SimpleNamespace,
+) -> None:
+    fm.init_firebase(_SECRETS)
+    assert fm.update_scan("uid", "", {"x": 1}) is False
 
 
 def test_scans_this_month_counts_filtered_docs(
@@ -368,8 +420,8 @@ def test_save_token_request(fake_firebase: SimpleNamespace) -> None:
     assert payload["status"] == "pending"
 
 
-def test_save_scan_when_firebase_disabled_returns_false() -> None:
-    assert fm.save_scan("uid", {"x": 1}) is False
+def test_save_scan_when_firebase_disabled_returns_none() -> None:
+    assert fm.save_scan("uid", {"x": 1}) is None
 
 
 def test_save_token_request_when_firebase_disabled_returns_false() -> None:

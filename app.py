@@ -63,6 +63,7 @@ from database import (
     create_user,
     get_init_error,
     get_user,
+    get_user_scans,
     init_firebase,
     is_firebase_ready,
     login_user,
@@ -70,6 +71,7 @@ from database import (
     save_token_request,
     scans_this_month,
     send_admin_notification,
+    update_scan,
 )
 from demo_data import load_demo_findings
 
@@ -88,7 +90,16 @@ _GITHUB_URL = "https://github.com/nileshvary/nileshvary-ai-security-engine"
 _REMEMBER_PARAM = "t"
 _SCREEN_PARAM = "p"
 _RESTORABLE_SCREENS: frozenset[str] = frozenset(
-    {"landing", "scanner", "summary", "review", "complete", "results", "admin"}
+    {
+        "landing",
+        "scanner",
+        "analytics",
+        "summary",
+        "review",
+        "complete",
+        "results",
+        "admin",
+    }
 )
 
 
@@ -943,18 +954,87 @@ def _can_run_scan() -> bool:
     return _scans_remaining_this_month() > 0
 
 
-def _consume_scan_quota(*, source: str = "unknown") -> None:
-    """Record one scan against the user's quota by writing to Firestore."""
+def _count_severities(findings: list[Finding]) -> dict[str, int]:
+    """Count findings by severity bucket for analytics aggregation."""
+    counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    for f in findings:
+        if f.severity in counts:
+            counts[f.severity] += 1
+    return counts
+
+
+def _count_owasp(findings: list[Finding]) -> dict[str, int]:
+    """Count findings by OWASP LLM category."""
+    counts: dict[str, int] = {}
+    for f in findings:
+        code = f.owasp_llm_category
+        counts[code] = counts.get(code, 0) + 1
+    return counts
+
+
+def _consume_scan_quota(
+    *,
+    source: str = "unknown",
+    findings: list[Finding] | None = None,
+) -> None:
+    """Record one scan against the user's quota by writing to Firestore.
+
+    When ``findings`` is provided, we save the rich metadata (counts by
+    severity + OWASP category) needed by the Analytics dashboard. The
+    generated ``scan_id`` is stored in session state so the results
+    screen can later update the same record with completion data via
+    ``_save_completed_scan_results``.
+    """
     uid = st.session_state.get("user_uid")
     if not uid:
         return
-    save_scan(
-        uid,
-        {
-            "source": source,
-            "tier_at_scan": _current_tier() or "unknown",
-        },
-    )
+    payload: dict[str, Any] = {
+        "source": source,
+        "tier_at_scan": _current_tier() or "unknown",
+        "status": "in_progress",
+    }
+    if findings is not None:
+        payload["total_findings"] = len(findings)
+        payload["severity_counts"] = _count_severities(findings)
+        payload["owasp_counts"] = _count_owasp(findings)
+    scan_id = save_scan(uid, payload)
+    if scan_id:
+        st.session_state.current_scan_id = scan_id
+
+
+def _save_completed_scan_results() -> None:
+    """Update the current Firestore scan record with final review stats."""
+    scan_id = st.session_state.get("current_scan_id")
+    uid = st.session_state.get("user_uid")
+    if not scan_id or not uid:
+        return
+    findings = st.session_state.get("findings") or []
+    approved = st.session_state.get("approved") or []
+    skipped = st.session_state.get("skipped") or []
+    report = st.session_state.get("verification_report")
+
+    total = len(findings)
+    fix_rate = (len(approved) / total * 100.0) if total else 0.0
+    if report is not None and getattr(report, "total_findings", 0):
+        # Verified fraction is the most defensible "security score".
+        security_score = report.verified_count / report.total_findings * 100.0
+    else:
+        security_score = fix_rate
+
+    updates: dict[str, Any] = {
+        "status": "completed",
+        "completed_at": datetime.utcnow().isoformat(),
+        "approved_count": len(approved),
+        "skipped_count": len(skipped),
+        "fix_rate": round(fix_rate, 1),
+        "security_score": round(security_score, 1),
+    }
+    if report is not None:
+        updates["verified_count"] = report.verified_count
+        updates["partial_count"] = report.partial_count
+        updates["failed_count"] = report.failed_count
+        updates["unverifiable_count"] = report.unverifiable_count
+    update_scan(uid, scan_id, updates)
 
 
 def _render_quota_exceeded_message() -> None:
@@ -1138,6 +1218,15 @@ def render_sidebar() -> None:
             help="Generate ready-to-run garak commands for your target.",
         ):
             st.session_state.screen = "scanner"
+            st.rerun()
+
+        if st.button(
+            "📊 Analytics",
+            use_container_width=True,
+            key="nav-analytics",
+            help="Security operations analytics dashboard.",
+        ):
+            st.session_state.screen = "analytics"
             st.rerun()
 
         st.divider()
@@ -1878,8 +1967,7 @@ def render_landing() -> None:
                 if not _can_run_scan():
                     _render_quota_exceeded_message()
                 else:
-                    _consume_scan_quota(source="upload")
-                    _ingest_uploaded(uploaded)
+                    _ingest_uploaded(uploaded, source="upload")
 
     with demo_col:
         if st.button(
@@ -1891,8 +1979,9 @@ def render_landing() -> None:
             if not _can_run_scan():
                 _render_quota_exceeded_message()
             else:
-                _consume_scan_quota(source="demo")
-                st.session_state.findings = load_demo_findings()
+                findings = load_demo_findings()
+                st.session_state.findings = findings
+                _consume_scan_quota(source="demo", findings=findings)
                 st.session_state.screen = "summary"
                 st.rerun()
         st.caption("Real attack patterns • All 10 LLM categories.")
@@ -1919,8 +2008,12 @@ def render_landing() -> None:
     )
 
 
-def _ingest_uploaded(uploaded: Any) -> None:
-    """Parse the uploaded JSONL via GarakParser and advance to summary."""
+def _ingest_uploaded(uploaded: Any, *, source: str = "upload") -> None:
+    """Parse the uploaded JSONL via GarakParser and advance to summary.
+
+    Also writes the quota record to Firestore with the parsed findings
+    metadata so the Analytics dashboard has counts to chart.
+    """
     tmp_dir = Path(tempfile.mkdtemp(prefix="remediax-upload-"))
     src_path = tmp_dir / uploaded.name
     src_path.write_bytes(uploaded.getvalue())
@@ -1935,6 +2028,7 @@ def _ingest_uploaded(uploaded: Any) -> None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return
     st.session_state.findings = findings
+    _consume_scan_quota(source=source, findings=findings)
     st.session_state.screen = "summary"
     shutil.rmtree(tmp_dir, ignore_errors=True)
     st.rerun()
@@ -2307,6 +2401,9 @@ def _apply_and_write() -> None:
         output_dir=output_dir,
     )
     st.session_state.final_report = final_report
+    # Update the Firestore scan record with completion stats so the
+    # Analytics dashboard has fix-rate / security-score data to chart.
+    _save_completed_scan_results()
     st.session_state.screen = "results"
 
 
@@ -2735,8 +2832,7 @@ def render_scanner() -> None:
             if not _can_run_scan():
                 _render_quota_exceeded_message()
             else:
-                _consume_scan_quota(source="scanner-upload")
-                _ingest_uploaded(uploaded)
+                _ingest_uploaded(uploaded, source="scanner-upload")
 
     # ── STEP 7 — Or use the live demo ───────────────────────────────
     st.markdown(
@@ -2756,8 +2852,9 @@ def render_scanner() -> None:
         if not _can_run_scan():
             _render_quota_exceeded_message()
         else:
-            _consume_scan_quota(source="scanner-demo")
-            st.session_state.findings = load_demo_findings()
+            findings = load_demo_findings()
+            st.session_state.findings = findings
+            _consume_scan_quota(source="scanner-demo", findings=findings)
             st.session_state.screen = "summary"
             st.rerun()
 
@@ -2792,6 +2889,328 @@ def render_scanner() -> None:
         f'<div class="rx-concepts-grid">{cards_html}</div>',
         unsafe_allow_html=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Screen — Analytics
+# ---------------------------------------------------------------------------
+
+
+def _vuln_label_for_owasp(code: str) -> str:
+    """Map an OWASP LLM code to a human-readable vulnerability name."""
+    mapping = {
+        "LLM01": "Prompt Injection",
+        "LLM02": "Sensitive Information Disclosure",
+        "LLM03": "Supply Chain Vulnerabilities",
+        "LLM04": "Data and Model Poisoning",
+        "LLM05": "Improper Output Handling",
+        "LLM06": "Excessive Agency",
+        "LLM07": "System Prompt Leakage",
+        "LLM08": "Vector and Embedding Weaknesses",
+        "LLM09": "Misinformation",
+        "LLM10": "Unbounded Consumption",
+    }
+    return mapping.get(code, code)
+
+
+def _load_history() -> list[dict[str, Any]]:
+    """Return the authenticated user's Firestore scan history (newest first)."""
+    uid = st.session_state.get("user_uid")
+    if not uid:
+        return []
+    try:
+        return list(get_user_scans(uid, limit=100))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to load scan history: %s", exc)
+        return []
+
+
+def _completed_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter to scans that reached the results screen (have completion data)."""
+    return [h for h in history if h.get("status") == "completed"]
+
+
+def _current_scan_metrics() -> dict[str, Any] | None:
+    """Compute current-scan metrics from session state when findings exist."""
+    findings: list[Finding] = st.session_state.get("findings") or []
+    if not findings:
+        return None
+    total = len(findings)
+    approved = st.session_state.get("approved") or []
+    skipped = st.session_state.get("skipped") or []
+    report = st.session_state.get("verification_report")
+    sev = _count_severities(findings)
+    owasp = _count_owasp(findings)
+    fix_rate = (len(approved) / total * 100.0) if total else 0.0
+    if report is not None and getattr(report, "total_findings", 0):
+        security_score = report.verified_count / report.total_findings * 100.0
+    else:
+        security_score = max(0.0, 100.0 - sev["CRITICAL"] * 25 - sev["HIGH"] * 10)
+    return {
+        "total": total,
+        "approved": len(approved),
+        "skipped": len(skipped),
+        "fix_rate": round(fix_rate, 1),
+        "security_score": round(security_score, 1),
+        "severity_counts": sev,
+        "owasp_counts": owasp,
+    }
+
+
+def _build_owasp_csv(history: list[dict[str, Any]]) -> str:
+    """Build a CSV export of completed-scan history."""
+    header = (
+        "created_at,source,total_findings,approved,skipped,"
+        "fix_rate,security_score,verified,partial,failed"
+    )
+    rows = [header]
+    for h in history:
+        rows.append(
+            ",".join(
+                str(x)
+                for x in (
+                    h.get("created_at", ""),
+                    h.get("source", ""),
+                    h.get("total_findings", 0),
+                    h.get("approved_count", 0),
+                    h.get("skipped_count", 0),
+                    h.get("fix_rate", 0),
+                    h.get("security_score", 0),
+                    h.get("verified_count", 0),
+                    h.get("partial_count", 0),
+                    h.get("failed_count", 0),
+                )
+            )
+        )
+    return "\n".join(rows) + "\n"
+
+
+def _render_no_data_state() -> None:
+    """Empty-history placeholder for new users."""
+    st.info(
+        "No scan data yet. Run your first scan to see analytics here."
+    )
+    if st.button(
+        "▶ Run Demo Scan",
+        key="analytics-run-demo",
+        type="primary",
+    ):
+        findings = load_demo_findings()
+        st.session_state.findings = findings
+        _consume_scan_quota(source="demo", findings=findings)
+        st.session_state.screen = "summary"
+        st.rerun()
+
+
+def _render_analytics_basic(history: list[dict[str, Any]]) -> None:
+    """Basic-tier view: current scan metrics + locked premium sections."""
+    metrics = _current_scan_metrics()
+    if metrics is None and not history:
+        _render_no_data_state()
+        return
+
+    # If there's a current scan, show its stats.
+    if metrics is not None:
+        st.markdown(
+            '<div class="rx-section-eyebrow">CURRENT SCAN</div>',
+            unsafe_allow_html=True,
+        )
+        cols = st.columns(4)
+        cols[0].metric("Security score", f"{metrics['security_score']}%")
+        cols[1].metric("Total findings", metrics["total"])
+        cols[2].metric("Approved (fixed)", metrics["approved"])
+        cols[3].metric("Skipped", metrics["skipped"])
+
+        st.markdown(
+            '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+            "OWASP BREAKDOWN (CURRENT SCAN)</div>",
+            unsafe_allow_html=True,
+        )
+        owasp = metrics["owasp_counts"]
+        for code in sorted(owasp):
+            st.caption(
+                f"**{code}** — {_vuln_label_for_owasp(code)} "
+                f"&middot; {owasp[code]} finding(s)"
+            )
+    else:
+        st.info(
+            "Run a scan to see current-scan metrics here. Historical "
+            "analytics across all scans is a premium feature."
+        )
+
+    # Locked premium sections.
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:24px;">'
+        "PREMIUM ANALYTICS — LOCKED</div>",
+        unsafe_allow_html=True,
+    )
+    _render_locked_feature(
+        "Full analytics dashboard",
+        "Upgrade to Security Engineer access to view trends over time, "
+        "your full scan history, top vulnerabilities across all scans, "
+        "and PDF / CSV report exports.",
+        key_suffix="-analytics",
+    )
+
+
+def _render_analytics_premium(history: list[dict[str, Any]]) -> None:
+    """Premium-tier view: 7 sections, all data from Firestore history."""
+    completed = _completed_history(history)
+    if not completed:
+        _render_no_data_state()
+        return
+
+    # ── Section 1 — Overview ─────────────────────────────────────────
+    total_scans = len(completed)
+    total_threats = sum(int(h.get("total_findings", 0)) for h in completed)
+    total_fixed = sum(int(h.get("approved_count", 0)) for h in completed)
+    avg_fix_rate = (
+        sum(float(h.get("fix_rate", 0)) for h in completed) / total_scans
+        if total_scans
+        else 0.0
+    )
+    st.markdown(
+        '<div class="rx-section-eyebrow">OVERVIEW</div>',
+        unsafe_allow_html=True,
+    )
+    cols = st.columns(4)
+    cols[0].metric("Total scans", total_scans)
+    cols[1].metric("Threats detected", total_threats)
+    cols[2].metric("Threats fixed", total_fixed)
+    cols[3].metric("Average fix rate", f"{avg_fix_rate:.1f}%")
+
+    # Build common index (oldest → newest) for time-series charts.
+    sorted_completed = sorted(
+        completed, key=lambda h: str(h.get("created_at", ""))
+    )
+
+    # ── Section 2 — Security score trend ─────────────────────────────
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+        "SECURITY SCORE TREND</div>",
+        unsafe_allow_html=True,
+    )
+    score_data = {
+        str(h.get("created_at", ""))[:16]: float(h.get("security_score", 0))
+        for h in sorted_completed
+    }
+    if score_data:
+        st.line_chart(score_data, height=240, color="#00d4ff")
+    else:
+        st.caption("Not enough completed scans to draw a trend.")
+
+    # ── Section 3 — Threats by OWASP category ────────────────────────
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+        "THREATS BY OWASP CATEGORY</div>",
+        unsafe_allow_html=True,
+    )
+    owasp_totals: dict[str, int] = {}
+    for h in completed:
+        owasp_counts = h.get("owasp_counts") or {}
+        if hasattr(owasp_counts, "items"):
+            for code, count in owasp_counts.items():
+                owasp_totals[str(code)] = owasp_totals.get(str(code), 0) + int(count)
+    if owasp_totals:
+        st.bar_chart(owasp_totals, height=240, color="#ff4444")
+    else:
+        st.caption("No OWASP breakdown recorded for these scans.")
+
+    # ── Section 4 — Fix rate trend ───────────────────────────────────
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+        "FIX RATE TREND</div>",
+        unsafe_allow_html=True,
+    )
+    fix_data = {
+        str(h.get("created_at", ""))[:16]: float(h.get("fix_rate", 0))
+        for h in sorted_completed
+    }
+    if fix_data:
+        st.area_chart(fix_data, height=240, color="#00ff88")
+    else:
+        st.caption("Not enough completed scans to draw fix-rate trend.")
+
+    # ── Section 5 — Recent scans table ───────────────────────────────
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+        "RECENT SCANS (LAST 10)</div>",
+        unsafe_allow_html=True,
+    )
+    recent = completed[:10]
+    if recent:
+        table_rows = [
+            {
+                "Date / time": str(h.get("created_at", ""))[:16],
+                "Source": h.get("source", "?"),
+                "Findings": int(h.get("total_findings", 0)),
+                "Fixed": int(h.get("approved_count", 0)),
+                "Skipped": int(h.get("skipped_count", 0)),
+                "Fix rate %": float(h.get("fix_rate", 0)),
+                "Score": float(h.get("security_score", 0)),
+            }
+            for h in recent
+        ]
+        st.dataframe(table_rows, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No completed scans yet.")
+
+    # ── Section 6 — Top vulnerabilities ──────────────────────────────
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+        "TOP VULNERABILITIES</div>",
+        unsafe_allow_html=True,
+    )
+    if owasp_totals:
+        ranked = sorted(owasp_totals.items(), key=lambda kv: kv[1], reverse=True)
+        for i, (code, count) in enumerate(ranked[:10], 1):
+            st.markdown(
+                f"**{i}.** `{code}` &mdash; {_vuln_label_for_owasp(code)} "
+                f"&middot; found **{count}** time(s)"
+            )
+    else:
+        st.caption("No vulnerabilities recorded.")
+
+    # ── Section 7 — Export reports ───────────────────────────────────
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+        "EXPORT REPORTS</div>",
+        unsafe_allow_html=True,
+    )
+    csv_data = _build_owasp_csv(completed).encode("utf-8")
+    exp_col1, exp_col2 = st.columns(2)
+    if exp_col1.button(
+        "📕 Download PDF report",
+        use_container_width=True,
+        key="analytics-pdf",
+    ):
+        st.toast(
+            "📕 PDF export is rolling out in v1.1 — CSV is available now."
+        )
+    exp_col2.download_button(
+        "📄 Download CSV data",
+        data=csv_data,
+        file_name="remediax_analytics.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key="analytics-csv",
+    )
+
+
+def render_analytics() -> None:
+    """SECURITY OPERATIONS ANALYTICS dashboard."""
+    st.markdown(
+        '<div class="remediax-hero"><h1>📊 SECURITY OPERATIONS ANALYTICS</h1>'
+        '<div class="tagline">Monitor your LLM security posture '
+        "over time</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    history = _load_history()
+    if _has_premium():
+        _render_analytics_premium(history)
+    else:
+        _render_analytics_basic(history)
 
 
 # ---------------------------------------------------------------------------
@@ -2857,6 +3276,8 @@ def main() -> None:
         render_results()
     elif screen == "scanner":
         render_scanner()
+    elif screen == "analytics":
+        render_analytics()
     elif screen == "admin":
         render_admin_panel()
     else:  # pragma: no cover - defensive

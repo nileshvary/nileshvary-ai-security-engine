@@ -434,24 +434,69 @@ def set_user_tier(uid: str, tier: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def save_scan(uid: str, scan_data: dict[str, Any]) -> bool:
-    """Append a scan record to the user's Firestore history. Returns success."""
+def save_scan(
+    uid: str,
+    scan_data: dict[str, Any],
+    scan_id: str | None = None,
+) -> str | None:
+    """Persist a scan record for ``uid``.
+
+    Args:
+        uid: Firebase user id.
+        scan_data: Free-form metadata for this scan. ``created_at`` and
+            ``month_key`` are auto-set if absent.
+        scan_id: Optional deterministic doc id. When given, the caller
+            can later call ``update_scan(uid, scan_id, {...})`` to merge
+            completion stats into the same record. When ``None``,
+            Firestore auto-generates the id.
+
+    Returns:
+        The scan id (string) on success, or ``None`` when Firebase is
+        not configured or the write failed.
+    """
     if not is_firebase_ready():
-        return False
+        return None
     payload = dict(scan_data)
     payload.setdefault("created_at", _dt.datetime.utcnow().isoformat())
     payload.setdefault("month_key", _current_month_key())
     try:
         client = _firestore_client()
-        client.collection(_USERS_COLLECTION).document(uid).collection(
-            _SCANS_SUBCOLLECTION
-        ).add(payload)
-        client.collection(_USERS_COLLECTION).document(uid).set(
-            {"scans_total": _firestore_increment(1)}, merge=True
-        )
-        return True
+        users_doc = client.collection(_USERS_COLLECTION).document(uid)
+        scans = users_doc.collection(_SCANS_SUBCOLLECTION)
+        if scan_id is None:
+            _, doc_ref = scans.add(payload)
+            actual_id = doc_ref.id
+        else:
+            scans.document(scan_id).set(payload, merge=True)
+            actual_id = scan_id
+        users_doc.set({"scans_total": _firestore_increment(1)}, merge=True)
+        return str(actual_id)
     except Exception as exc:  # pragma: no cover
         logger.warning("Failed to save scan for %s: %s", uid, exc)
+        return None
+
+
+def update_scan(uid: str, scan_id: str, updates: dict[str, Any]) -> bool:
+    """Merge ``updates`` into an existing scan document.
+
+    Used to add completion stats (fix rate, security score, approved /
+    skipped counts) after the user finishes the interactive review.
+    Returns ``True`` on success, ``False`` when Firebase is not
+    configured, ``scan_id`` is falsy, or the write failed.
+    """
+    if not is_firebase_ready():
+        return False
+    if not scan_id:
+        return False
+    try:
+        _firestore_client().collection(_USERS_COLLECTION).document(uid).collection(
+            _SCANS_SUBCOLLECTION
+        ).document(scan_id).set(updates, merge=True)
+        return True
+    except Exception as exc:  # pragma: no cover
+        logger.warning(
+            "Failed to update scan %s for %s: %s", scan_id, uid, exc
+        )
         return False
 
 

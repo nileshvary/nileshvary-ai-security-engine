@@ -15,6 +15,7 @@ from database.firebase_manager import (
     save_token_request,
     scans_this_month,
     set_user_tier,
+    update_scan,
 )
 
 __all__ = [
@@ -32,4 +33,5 @@ __all__ = [
     "scans_this_month",
     "send_admin_notification",
     "set_user_tier",
+    "update_scan",
 ]
