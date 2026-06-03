@@ -452,6 +452,117 @@ def test_scans_this_month_counts_filtered_docs(
     assert fm.scans_this_month("uid-1") == 3
 
 
+# ---------------------------------------------------------------------------
+# save_upload / get_user_uploads / get_all_uploads
+# ---------------------------------------------------------------------------
+
+
+def test_save_upload_returns_none_when_firebase_disabled() -> None:
+    assert fm.save_upload("uid-1", {"filename": "x.jsonl"}) is None
+
+
+def test_save_upload_writes_to_uploads_subcollection_and_returns_id(
+    fake_firebase: SimpleNamespace,
+) -> None:
+    fm.init_firebase(_SECRETS)
+    doc_ref = MagicMock()
+    doc_ref.id = "upload-id-7"
+    fake_firebase.firestore_client.collection.return_value.document.return_value.collection.return_value.add.return_value = (
+        None,
+        doc_ref,
+    )
+    result = fm.save_upload(
+        "uid-1",
+        {"filename": "garak-hitlog.jsonl", "file_size": 12345, "status": "uploaded"},
+    )
+    assert result == "upload-id-7"
+    fake_firebase.firestore_client.collection.assert_any_call("users")
+    # The chain hits .document("uid-1").collection("uploads").add(...).
+    subcol_calls = (
+        fake_firebase.firestore_client.collection.return_value
+        .document.return_value.collection.call_args_list
+    )
+    assert any(call.args == ("uploads",) for call in subcol_calls)
+
+
+def test_save_upload_auto_sets_timestamp_and_created_at(
+    fake_firebase: SimpleNamespace,
+) -> None:
+    fm.init_firebase(_SECRETS)
+    doc_ref = MagicMock()
+    doc_ref.id = "x"
+    fake_firebase.firestore_client.collection.return_value.document.return_value.collection.return_value.add.return_value = (
+        None,
+        doc_ref,
+    )
+    fm.save_upload("uid", {"filename": "f.jsonl"})
+    call = fake_firebase.firestore_client.collection.return_value.document.return_value.collection.return_value.add
+    payload = call.call_args.args[0]
+    assert "created_at" in payload
+    assert "timestamp" in payload
+    # Timestamp falls back to created_at when not supplied.
+    assert payload["timestamp"] == payload["created_at"]
+
+
+def test_get_user_uploads_returns_empty_when_firebase_disabled() -> None:
+    assert fm.get_user_uploads("uid", limit=10) == []
+
+
+def test_get_user_uploads_queries_uploads_subcollection(
+    fake_firebase: SimpleNamespace,
+) -> None:
+    fm.init_firebase(_SECRETS)
+    doc_a = MagicMock()
+    doc_a.id = "u-1"
+    doc_a.to_dict.return_value = {"filename": "a.jsonl"}
+    doc_b = MagicMock()
+    doc_b.id = "u-2"
+    doc_b.to_dict.return_value = {"filename": "b.jsonl"}
+    chain = (
+        fake_firebase.firestore_client.collection.return_value
+        .document.return_value.collection.return_value
+    )
+    chain.order_by.return_value.limit.return_value.stream.return_value = [doc_a, doc_b]
+    result = fm.get_user_uploads("uid-1", limit=5)
+    assert [r["id"] for r in result] == ["u-1", "u-2"]
+    chain.order_by.assert_called_with("created_at", direction="DESC")
+    chain.order_by.return_value.limit.assert_called_with(5)
+
+
+def test_get_all_uploads_returns_empty_when_firebase_disabled() -> None:
+    assert fm.get_all_uploads() == []
+
+
+def test_get_all_uploads_queries_collection_group_and_attaches_uid(
+    fake_firebase: SimpleNamespace,
+) -> None:
+    fm.init_firebase(_SECRETS)
+
+    def _make_doc(doc_id: str, owner_uid: str, payload: dict[str, Any]) -> MagicMock:
+        doc = MagicMock(name=f"updoc-{doc_id}")
+        doc.id = doc_id
+        doc.to_dict.return_value = payload
+        owner_doc = MagicMock()
+        owner_doc.id = owner_uid
+        doc.reference.parent.parent = owner_doc
+        return doc
+
+    docs = [
+        _make_doc("up-A", "user-1", {"filename": "a.jsonl"}),
+        _make_doc("up-B", "user-2", {"filename": "b.jsonl"}),
+    ]
+    cg_chain = MagicMock(name="cg_chain")
+    cg_chain.order_by.return_value.limit.return_value.stream.return_value = docs
+    fake_firebase.firestore_client.collection_group.return_value = cg_chain
+
+    result = fm.get_all_uploads(limit=25)
+    fake_firebase.firestore_client.collection_group.assert_called_once_with("uploads")
+    cg_chain.order_by.assert_called_once_with("created_at", direction="DESC")
+    cg_chain.order_by.return_value.limit.assert_called_once_with(25)
+    assert [r["id"] for r in result] == ["up-A", "up-B"]
+    assert [r["user_uid"] for r in result] == ["user-1", "user-2"]
+
+
 def test_save_token_request(fake_firebase: SimpleNamespace) -> None:
     fm.init_firebase(_SECRETS)
     assert fm.save_token_request("a@b.com", "Alice", "want premium") is True

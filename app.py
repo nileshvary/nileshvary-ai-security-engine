@@ -53,6 +53,7 @@ from components.owasp_content import (
     ESCALATION_CATEGORIES,
     OWASP_CONTENT,
 )
+from components.security_score import calculate_security_score, score_status
 from components.voice import (
     consume_voice_command,
     escape_for_speech,
@@ -62,14 +63,17 @@ from database import (
     FirebaseAuthError,
     create_user,
     get_all_scans,
+    get_all_uploads,
     get_init_error,
     get_user,
     get_user_scans,
+    get_user_uploads,
     init_firebase,
     is_firebase_ready,
     login_user,
     save_scan,
     save_token_request,
+    save_upload,
     scans_this_month,
     send_admin_notification,
     send_user_email,
@@ -1107,6 +1111,38 @@ def _count_owasp(findings: list[Finding]) -> dict[str, int]:
     return counts
 
 
+def _count_escalations(findings: list[Finding]) -> int:
+    """Number of findings whose OWASP category is in ESCALATION_CATEGORIES."""
+    return sum(1 for f in findings if f.owasp_llm_category in ESCALATION_CATEGORIES)
+
+
+def _storage_uid() -> str:
+    """Return a Firestore-write uid for the current user.
+
+    Firebase users get their real uid. Admin-token users land under
+    ``"admin"`` (they have no Firebase uid), and unauthenticated /
+    guest sessions land under ``"guest"`` so analytics aggregations
+    can still see them.
+    """
+    uid = st.session_state.get("user_uid")
+    if uid:
+        return str(uid)
+    if st.session_state.get("is_admin"):
+        return "admin"
+    return "guest"
+
+
+def _render_score_badge(score: float) -> None:
+    """Render a colored SECURE / MODERATE / AT RISK / CRITICAL badge."""
+    label, color = score_status(score)
+    st.markdown(
+        f'<div style="display:inline-block;padding:4px 10px;border-radius:4px;'
+        f"background:{color}22;color:{color};font-weight:600;"
+        f'font-size:0.85rem;letter-spacing:0.05em;">{label}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _consume_scan_quota(
     *,
     source: str = "unknown",
@@ -1114,35 +1150,46 @@ def _consume_scan_quota(
 ) -> None:
     """Record one scan against the user's quota by writing to Firestore.
 
-    When ``findings`` is provided, we save the rich metadata (counts by
-    severity + OWASP category) needed by the Analytics dashboard. The
-    generated ``scan_id`` is stored in session state so the results
-    screen can later update the same record with completion data via
-    ``_save_completed_scan_results``.
+    Writes for every authenticated category — Firebase users land
+    under their uid, admin-token users under ``"admin"``, anonymous
+    sessions under ``"guest"``. When ``findings`` is provided the
+    payload carries severity + OWASP counts, escalation count, and a
+    ``security_score`` so analytics can chart history without a
+    second compute pass. ``filename`` (if any) is carried from the
+    uploaded-file flow via ``current_upload_filename`` in session
+    state.
     """
-    uid = st.session_state.get("user_uid")
-    if not uid:
-        return
+    uid = _storage_uid()
     payload: dict[str, Any] = {
         "source": source,
         "tier_at_scan": _current_tier() or "unknown",
         "status": "in_progress",
+        "filename": st.session_state.get("current_upload_filename"),
     }
     if findings is not None:
         payload["total_findings"] = len(findings)
         payload["severity_counts"] = _count_severities(findings)
         payload["owasp_counts"] = _count_owasp(findings)
+        payload["escalations"] = _count_escalations(findings)
+        payload["security_score"] = round(calculate_security_score(findings), 1)
     scan_id = save_scan(uid, payload)
     if scan_id:
         st.session_state.current_scan_id = scan_id
+        st.session_state.complete_saved_scan_id = None
 
 
 def _save_completed_scan_results() -> None:
-    """Update the current Firestore scan record with final review stats."""
+    """Merge final review stats into the current Firestore scan record.
+
+    Idempotent: called both from ``render_complete`` (on first entry)
+    and ``_apply_and_write`` (after verification). Uses the same
+    ``calculate_security_score`` formula as the in-progress write so
+    the score is consistent across the whole lifecycle.
+    """
     scan_id = st.session_state.get("current_scan_id")
-    uid = st.session_state.get("user_uid")
-    if not scan_id or not uid:
+    if not scan_id:
         return
+    uid = _storage_uid()
     findings = st.session_state.get("findings") or []
     approved = st.session_state.get("approved") or []
     skipped = st.session_state.get("skipped") or []
@@ -1150,19 +1197,22 @@ def _save_completed_scan_results() -> None:
 
     total = len(findings)
     fix_rate = (len(approved) / total * 100.0) if total else 0.0
-    if report is not None and getattr(report, "total_findings", 0):
-        # Verified fraction is the most defensible "security score".
-        security_score = report.verified_count / report.total_findings * 100.0
-    else:
-        security_score = fix_rate
+    security_score = calculate_security_score(findings)
 
     updates: dict[str, Any] = {
         "status": "completed",
         "completed_at": datetime.utcnow().isoformat(),
+        "timestamp": datetime.utcnow().isoformat(),
         "approved_count": len(approved),
+        "approved": len(approved),
         "skipped_count": len(skipped),
+        "skipped": len(skipped),
+        "total_findings": total,
         "fix_rate": round(fix_rate, 1),
         "security_score": round(security_score, 1),
+        "owasp_counts": _count_owasp(findings),
+        "escalations": _count_escalations(findings),
+        "filename": st.session_state.get("current_upload_filename"),
     }
     if report is not None:
         updates["verified_count"] = report.verified_count
@@ -2230,6 +2280,7 @@ def render_landing() -> None:
             else:
                 findings = load_demo_findings()
                 st.session_state.findings = findings
+                st.session_state.current_upload_filename = None
                 _consume_scan_quota(source="demo", findings=findings)
                 st.session_state.screen = "summary"
                 st.rerun()
@@ -2260,22 +2311,76 @@ def render_landing() -> None:
 def _ingest_uploaded(uploaded: Any, *, source: str = "upload") -> None:
     """Parse the uploaded JSONL via GarakParser and advance to summary.
 
-    Also writes the quota record to Firestore with the parsed findings
-    metadata so the Analytics dashboard has counts to chart.
+    Records the upload event in Firestore (collection: ``uploads``)
+    BEFORE parsing so failed parses are still observable in analytics,
+    then re-saves the same record with the findings count once
+    parsing succeeds. Stashes the filename in session state so the
+    downstream scan record can carry it through to completion.
     """
+    file_bytes = uploaded.getvalue()
+    file_size = len(file_bytes)
+    filename = uploaded.name
+    st.session_state.current_upload_filename = filename
+
+    # Record the upload attempt first — analytics should see it even
+    # if parsing fails below.
+    upload_uid = _storage_uid()
+    upload_payload: dict[str, Any] = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "filename": filename,
+        "file_size": file_size,
+        "source": source,
+        "status": "uploaded",
+        "findings_count": 0,
+    }
+    upload_id = save_upload(upload_uid, upload_payload)
+    if upload_id:
+        st.session_state.current_upload_id = upload_id
+
     tmp_dir = Path(tempfile.mkdtemp(prefix="remediax-upload-"))
-    src_path = tmp_dir / uploaded.name
-    src_path.write_bytes(uploaded.getvalue())
+    src_path = tmp_dir / filename
+    src_path.write_bytes(file_bytes)
     try:
         findings = GarakParser(src_path).parse()
     except Exception as exc:
         st.error(f"Could not parse uploaded file: {exc}")
+        # Best-effort: mark the upload record as parse-failed so
+        # analytics can distinguish bad uploads from successful ones.
+        if upload_id:
+            try:
+                save_upload(
+                    upload_uid,
+                    {**upload_payload, "status": "parse_failed", "error": str(exc)},
+                )
+            except Exception:  # pragma: no cover - defensive
+                pass
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return
     if not findings:
         st.warning("No findings detected in this file.")
+        if upload_id:
+            try:
+                save_upload(
+                    upload_uid,
+                    {**upload_payload, "status": "no_findings"},
+                )
+            except Exception:  # pragma: no cover - defensive
+                pass
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return
+    # Re-record the upload now that we know the findings count.
+    if upload_id:
+        try:
+            save_upload(
+                upload_uid,
+                {
+                    **upload_payload,
+                    "status": "parsed",
+                    "findings_count": len(findings),
+                },
+            )
+        except Exception:  # pragma: no cover - defensive
+            pass
     st.session_state.findings = findings
     _consume_scan_quota(source=source, findings=findings)
     st.session_state.screen = "summary"
@@ -2548,6 +2653,18 @@ def render_complete() -> None:
     findings: list[Finding] = st.session_state.findings
     approved = st.session_state.approved
     skipped = st.session_state.skipped
+
+    # Auto-save completion stats the moment the user reaches this
+    # screen so analytics captures the scan even if they close the
+    # tab without clicking Apply. Idempotent — guarded by the scan
+    # id so repeated reruns of the same review don't re-write.
+    current_scan_id = st.session_state.get("current_scan_id")
+    if (
+        current_scan_id
+        and st.session_state.get("complete_saved_scan_id") != current_scan_id
+    ):
+        _save_completed_scan_results()
+        st.session_state.complete_saved_scan_id = current_scan_id
 
     st.markdown("### ✅ Review Complete")
     if st.session_state.tts_enabled:
@@ -3103,6 +3220,7 @@ def render_scanner() -> None:
         else:
             findings = load_demo_findings()
             st.session_state.findings = findings
+            st.session_state.current_upload_filename = None
             _consume_scan_quota(source="scanner-demo", findings=findings)
             st.session_state.screen = "summary"
             st.rerun()
@@ -3168,7 +3286,9 @@ def _load_history() -> list[dict[str, Any]]:
     Admin token users see the platform-wide history (every user's
     scans), so admin analytics reflects total platform activity rather
     than the empty per-uid view (admins have no ``user_uid``). Regular
-    users see only their own scans.
+    users see only their own scans. Guests fall through to the
+    ``"guest"`` storage uid so demo-only sessions still surface their
+    own runs in the dashboard.
     """
     if st.session_state.get("is_admin"):
         try:
@@ -3176,13 +3296,32 @@ def _load_history() -> list[dict[str, Any]]:
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("Failed to load platform-wide scan history: %s", exc)
             return []
-    uid = st.session_state.get("user_uid")
-    if not uid:
-        return []
+    uid = _storage_uid()
     try:
         return list(get_user_scans(uid, limit=100))
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Failed to load scan history: %s", exc)
+        return []
+
+
+def _load_uploads() -> list[dict[str, Any]]:
+    """Return the active user's upload history (newest first).
+
+    Admin → platform-wide via ``get_all_uploads``; everyone else uses
+    their per-uid subcollection (with the ``"guest"`` namespace
+    fallback for anonymous sessions).
+    """
+    if st.session_state.get("is_admin"):
+        try:
+            return list(get_all_uploads(limit=100))
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed to load platform-wide uploads: %s", exc)
+            return []
+    uid = _storage_uid()
+    try:
+        return list(get_user_uploads(uid, limit=100))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to load upload history: %s", exc)
         return []
 
 
@@ -3199,14 +3338,10 @@ def _current_scan_metrics() -> dict[str, Any] | None:
     total = len(findings)
     approved = st.session_state.get("approved") or []
     skipped = st.session_state.get("skipped") or []
-    report = st.session_state.get("verification_report")
     sev = _count_severities(findings)
     owasp = _count_owasp(findings)
     fix_rate = (len(approved) / total * 100.0) if total else 0.0
-    if report is not None and getattr(report, "total_findings", 0):
-        security_score = report.verified_count / report.total_findings * 100.0
-    else:
-        security_score = max(0.0, 100.0 - sev["CRITICAL"] * 25 - sev["HIGH"] * 10)
+    security_score = calculate_security_score(findings)
     return {
         "total": total,
         "approved": len(approved),
@@ -3216,6 +3351,81 @@ def _current_scan_metrics() -> dict[str, Any] | None:
         "severity_counts": sev,
         "owasp_counts": owasp,
     }
+
+
+def _format_file_size(size: int | float | None) -> str:
+    """Human-readable file size (KB/MB) for the upload history table."""
+    try:
+        n = float(size or 0)
+    except (TypeError, ValueError):
+        return "—"
+    if n < 1024:
+        return f"{int(n)} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n / (1024 * 1024):.1f} MB"
+
+
+def _activity_totals(
+    history: list[dict[str, Any]],
+    uploads: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Roll up totals for the ACTIVITY OVERVIEW section."""
+    completed = _completed_history(history)
+    total_uploads = len(uploads)
+    total_completed_scans = len(completed)
+    total_findings = sum(int(h.get("total_findings", 0)) for h in completed)
+    total_approved = sum(int(h.get("approved_count", 0)) for h in completed)
+    return {
+        "uploads": total_uploads,
+        "scans_completed": total_completed_scans,
+        "vulnerabilities": total_findings,
+        "approved": total_approved,
+    }
+
+
+def _render_activity_overview(
+    history: list[dict[str, Any]],
+    uploads: list[dict[str, Any]],
+) -> None:
+    """ACTIVITY OVERVIEW — 4 metric cards visible to every tier."""
+    totals = _activity_totals(history, uploads)
+    st.markdown(
+        '<div class="rx-section-eyebrow">ACTIVITY OVERVIEW</div>',
+        unsafe_allow_html=True,
+    )
+    cols = st.columns(4)
+    cols[0].metric("Total files uploaded", totals["uploads"])
+    cols[1].metric("Total scans completed", totals["scans_completed"])
+    cols[2].metric("Total vulnerabilities found", totals["vulnerabilities"])
+    cols[3].metric("Total patches approved", totals["approved"])
+
+
+def _render_upload_history_table(
+    uploads: list[dict[str, Any]],
+    *,
+    limit: int = 10,
+) -> None:
+    """Upload history table — surfaced for every tier."""
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+        "UPLOAD HISTORY</div>",
+        unsafe_allow_html=True,
+    )
+    if not uploads:
+        st.caption("No uploads yet.")
+        return
+    rows = [
+        {
+            "Date": str(u.get("timestamp") or u.get("created_at") or "")[:16],
+            "Filename": u.get("filename") or "—",
+            "Size": _format_file_size(u.get("file_size")),
+            "Findings": int(u.get("findings_count", 0)),
+            "Status": str(u.get("status") or "uploaded"),
+        }
+        for u in uploads[:limit]
+    ]
+    st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
 def _build_owasp_csv(history: list[dict[str, Any]]) -> str:
@@ -3263,17 +3473,24 @@ def _render_no_data_state() -> None:
         st.rerun()
 
 
-def _render_analytics_basic(history: list[dict[str, Any]]) -> None:
-    """Basic-tier view: current scan metrics + locked premium sections."""
+def _render_analytics_basic(
+    history: list[dict[str, Any]],
+    uploads: list[dict[str, Any]],
+) -> None:
+    """Basic-tier view: activity overview + upload history + current-scan + premium pitch."""
     metrics = _current_scan_metrics()
-    if metrics is None and not history:
+    if metrics is None and not history and not uploads:
         _render_no_data_state()
         return
 
-    # If there's a current scan, show its stats.
+    # ── ACTIVITY OVERVIEW — visible to every tier ──────────────────
+    _render_activity_overview(history, uploads)
+
+    # ── CURRENT SCAN — only when there is an in-progress scan ──────
     if metrics is not None:
         st.markdown(
-            '<div class="rx-section-eyebrow">CURRENT SCAN</div>',
+            '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+            "CURRENT SCAN</div>",
             unsafe_allow_html=True,
         )
         cols = st.columns(4)
@@ -3281,6 +3498,7 @@ def _render_analytics_basic(history: list[dict[str, Any]]) -> None:
         cols[1].metric("Total findings", metrics["total"])
         cols[2].metric("Approved (fixed)", metrics["approved"])
         cols[3].metric("Skipped", metrics["skipped"])
+        _render_score_badge(metrics["security_score"])
 
         st.markdown(
             '<div class="rx-section-eyebrow" style="margin-top:18px;">'
@@ -3293,59 +3511,67 @@ def _render_analytics_basic(history: list[dict[str, Any]]) -> None:
                 f"**{code}** — {_vuln_label_for_owasp(code)} "
                 f"&middot; {owasp[code]} finding(s)"
             )
-    else:
-        st.info(
-            "Run a scan to see current-scan metrics here. Historical "
-            "analytics across all scans is a premium feature."
-        )
 
-    # Locked premium sections.
+    # ── UPLOAD HISTORY — visible to every tier ─────────────────────
+    _render_upload_history_table(uploads)
+
+    # ── Locked premium pitch ───────────────────────────────────────
     st.markdown(
         '<div class="rx-section-eyebrow" style="margin-top:24px;">'
         "PREMIUM ANALYTICS — LOCKED</div>",
         unsafe_allow_html=True,
     )
     _render_locked_feature(
-        "Full analytics dashboard",
-        "Upgrade to Security Engineer access to view trends over time, "
-        "your full scan history, top vulnerabilities across all scans, "
-        "and PDF / CSV report exports.",
+        "Full scan history, trends, exports",
+        "Upgrade to Security Engineer to unlock the full scan history "
+        "table, security-score and fix-rate trend charts, top "
+        "vulnerabilities across every scan, and PDF / CSV report "
+        "exports.",
         key_suffix="-analytics",
     )
 
 
-def _render_analytics_premium(history: list[dict[str, Any]]) -> None:
-    """Premium-tier view: 7 sections, all data from Firestore history."""
+def _render_analytics_premium(
+    history: list[dict[str, Any]],
+    uploads: list[dict[str, Any]],
+) -> None:
+    """Premium-tier view: activity overview + upload history + full charts."""
     completed = _completed_history(history)
-    if not completed:
+    if not completed and not uploads:
         _render_no_data_state()
         return
 
-    # ── Section 1 — Overview ─────────────────────────────────────────
-    total_scans = len(completed)
-    total_threats = sum(int(h.get("total_findings", 0)) for h in completed)
-    total_fixed = sum(int(h.get("approved_count", 0)) for h in completed)
-    avg_fix_rate = (
-        sum(float(h.get("fix_rate", 0)) for h in completed) / total_scans
-        if total_scans
-        else 0.0
-    )
-    st.markdown(
-        '<div class="rx-section-eyebrow">OVERVIEW</div>',
-        unsafe_allow_html=True,
-    )
-    cols = st.columns(4)
-    cols[0].metric("Total scans", total_scans)
-    cols[1].metric("Threats detected", total_threats)
-    cols[2].metric("Threats fixed", total_fixed)
-    cols[3].metric("Average fix rate", f"{avg_fix_rate:.1f}%")
+    # ── ACTIVITY OVERVIEW — same widget the basic tier sees ────────
+    _render_activity_overview(history, uploads)
+
+    # ── UPLOAD HISTORY — premium gets the full list (50 instead of 10)
+    _render_upload_history_table(uploads, limit=50)
+
+    if not completed:
+        # No completed scans yet — uploads exist but no review done.
+        st.info(
+            "Upload data captured. Run a review to start populating "
+            "the trend charts below."
+        )
+        return
 
     # Build common index (oldest → newest) for time-series charts.
     sorted_completed = sorted(
         completed, key=lambda h: str(h.get("created_at", ""))
     )
+    avg_fix_rate = (
+        sum(float(h.get("fix_rate", 0)) for h in completed) / len(completed)
+    )
 
-    # ── Section 2 — Security score trend ─────────────────────────────
+    # ── Section — Average fix rate (single headline number) ────────
+    st.markdown(
+        '<div class="rx-section-eyebrow" style="margin-top:18px;">'
+        "AVERAGE FIX RATE (ALL COMPLETED SCANS)</div>",
+        unsafe_allow_html=True,
+    )
+    st.metric("Average fix rate", f"{avg_fix_rate:.1f}%")
+
+    # ── Section — Security score trend ─────────────────────────────
     st.markdown(
         '<div class="rx-section-eyebrow" style="margin-top:18px;">'
         "SECURITY SCORE TREND</div>",
@@ -3357,6 +3583,8 @@ def _render_analytics_premium(history: list[dict[str, Any]]) -> None:
     }
     if score_data:
         st.line_chart(score_data, height=240, color="#00d4ff")
+        latest_score = list(score_data.values())[-1]
+        _render_score_badge(latest_score)
     else:
         st.caption("Not enough completed scans to draw a trend.")
 
@@ -3468,10 +3696,11 @@ def render_analytics() -> None:
     )
 
     history = _load_history()
+    uploads = _load_uploads()
     if st.session_state.get("is_admin") or _has_premium():
-        _render_analytics_premium(history)
+        _render_analytics_premium(history, uploads)
     else:
-        _render_analytics_basic(history)
+        _render_analytics_basic(history, uploads)
 
 
 # ---------------------------------------------------------------------------

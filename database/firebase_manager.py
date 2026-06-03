@@ -56,6 +56,7 @@ _FIREBASE_AUTH_REST = (
 )
 _USERS_COLLECTION = "users"
 _SCANS_SUBCOLLECTION = "scans"
+_UPLOADS_SUBCOLLECTION = "uploads"
 _TOKEN_REQUESTS_COLLECTION = "token_requests"
 
 _DEFAULT_TIER = "basic"
@@ -605,6 +606,111 @@ def scans_this_month(uid: str) -> int:
     except Exception as exc:  # pragma: no cover
         logger.warning("Failed to count scans for %s: %s", uid, exc)
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Uploads — file-ingest records, separate lifecycle from scans
+# ---------------------------------------------------------------------------
+
+
+def save_upload(uid: str, upload_data: dict[str, Any]) -> str | None:
+    """Persist an upload record under ``users/{uid}/uploads/{auto-id}``.
+
+    Uploads are tracked separately from scans because a file can be
+    uploaded and parsed without the user ever completing a review.
+    Analytics reads both collections to surface "files uploaded" vs
+    "scans completed" as distinct metrics.
+
+    Args:
+        uid: Owning user id. Pass the literal strings ``"guest"`` or
+            ``"admin"`` for unauthenticated / admin-token users so the
+            data lands under a stable namespace.
+        upload_data: Caller-supplied fields (filename, file_size,
+            findings_count, status, etc.). ``timestamp`` and
+            ``created_at`` are auto-set if absent.
+
+    Returns:
+        The new upload id on success, ``None`` when Firebase is not
+        configured or the write failed.
+    """
+    if not is_firebase_ready():
+        return None
+    payload = dict(upload_data)
+    payload.setdefault("created_at", _dt.datetime.utcnow().isoformat())
+    payload.setdefault("timestamp", payload["created_at"])
+    try:
+        _, doc_ref = (
+            _firestore_client()
+            .collection(_USERS_COLLECTION)
+            .document(uid)
+            .collection(_UPLOADS_SUBCOLLECTION)
+            .add(payload)
+        )
+        return str(doc_ref.id)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Failed to save upload for %s: %s", uid, exc)
+        return None
+
+
+def get_user_uploads(uid: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Return the user's most recent uploads, newest first."""
+    if not is_firebase_ready():
+        return []
+    try:
+        docs = list(
+            _firestore_client()
+            .collection(_USERS_COLLECTION)
+            .document(uid)
+            .collection(_UPLOADS_SUBCOLLECTION)
+            .order_by("created_at", direction=_firestore_descending())
+            .limit(limit)
+            .stream()
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Failed to list uploads for %s: %s", uid, exc)
+        return []
+    out: list[dict[str, Any]] = []
+    for doc in docs:
+        record = dict(doc.to_dict() or {})
+        record["id"] = doc.id
+        out.append(record)
+    return out
+
+
+def get_all_uploads(limit: int = 100) -> list[dict[str, Any]]:
+    """Return uploads across every user, newest first.
+
+    Powers the platform-wide admin Activity Overview. Mirrors the
+    behavior of ``get_all_scans`` — single collection-group query
+    against every ``users/*/uploads`` subcollection. Requires a
+    collection-group index on ``created_at`` (Firebase prompts for it
+    on first use).
+    """
+    if not is_firebase_ready():
+        return []
+    try:
+        docs = list(
+            _firestore_client()
+            .collection_group(_UPLOADS_SUBCOLLECTION)
+            .order_by("created_at", direction=_firestore_descending())
+            .limit(limit)
+            .stream()
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Failed to list uploads across all users: %s", exc)
+        return []
+    out: list[dict[str, Any]] = []
+    for doc in docs:
+        record = dict(doc.to_dict() or {})
+        record["id"] = doc.id
+        try:
+            user_doc = doc.reference.parent.parent
+            if user_doc is not None:
+                record["user_uid"] = user_doc.id
+        except AttributeError:  # pragma: no cover - defensive
+            pass
+        out.append(record)
+    return out
 
 
 # ---------------------------------------------------------------------------
