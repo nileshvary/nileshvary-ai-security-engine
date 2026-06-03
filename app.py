@@ -2333,9 +2333,32 @@ def _ingest_uploaded(uploaded: Any, *, source: str = "upload") -> None:
         "status": "uploaded",
         "findings_count": 0,
     }
+    logger.info(
+        "_ingest_uploaded: calling save_upload (firebase_ready=%s) "
+        "uid=%s filename=%s size=%d source=%s",
+        is_firebase_ready(),
+        upload_uid,
+        filename,
+        file_size,
+        source,
+    )
     upload_id = save_upload(upload_uid, upload_payload)
     if upload_id:
         st.session_state.current_upload_id = upload_id
+        logger.info(
+            "_ingest_uploaded: Firestore confirmed upload id=%s "
+            "at users/%s/uploads/%s",
+            upload_id,
+            upload_uid,
+            upload_id,
+        )
+    else:
+        logger.warning(
+            "_ingest_uploaded: save_upload returned None for uid=%s filename=%s "
+            "(Firebase not configured or write failed — analytics will miss this upload)",
+            upload_uid,
+            filename,
+        )
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="remediax-upload-"))
     src_path = tmp_dir / filename

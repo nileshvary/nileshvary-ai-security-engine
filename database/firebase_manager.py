@@ -634,6 +634,11 @@ def save_upload(uid: str, upload_data: dict[str, Any]) -> str | None:
         configured or the write failed.
     """
     if not is_firebase_ready():
+        logger.info(
+            "save_upload SKIPPED (Firebase not ready) uid=%s filename=%s",
+            uid,
+            upload_data.get("filename"),
+        )
         return None
     payload = dict(upload_data)
     payload.setdefault("created_at", _dt.datetime.utcnow().isoformat())
@@ -646,9 +651,19 @@ def save_upload(uid: str, upload_data: dict[str, Any]) -> str | None:
             .collection(_UPLOADS_SUBCOLLECTION)
             .add(payload)
         )
-        return str(doc_ref.id)
+        upload_id = str(doc_ref.id)
+        logger.info(
+            "save_upload OK uid=%s id=%s filename=%s size=%s status=%s findings=%s",
+            uid,
+            upload_id,
+            payload.get("filename"),
+            payload.get("file_size"),
+            payload.get("status"),
+            payload.get("findings_count"),
+        )
+        return upload_id
     except Exception as exc:  # pragma: no cover
-        logger.warning("Failed to save upload for %s: %s", uid, exc)
+        logger.warning("save_upload FAILED uid=%s: %s", uid, exc)
         return None
 
 
