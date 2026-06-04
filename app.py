@@ -1591,6 +1591,13 @@ def render_sidebar() -> None:
                         'margin:6px 0 2px;">✅ Claude API key active</div>',
                         unsafe_allow_html=True,
                     )
+                    # Per-session API-call counter. Bumped by
+                    # ``RemediAXAI._call`` and mirrored into
+                    # session state by the finding-card autonomous
+                    # path so the sidebar can read it without holding
+                    # a reference to the live client.
+                    ai_calls = int(st.session_state.get("ai_call_count", 0))
+                    st.caption(f"🤖 AI calls this session: **{ai_calls}**")
                     if _read_session_secret():
                         st.caption(
                             "🔒 Encrypted with the server secret before being "

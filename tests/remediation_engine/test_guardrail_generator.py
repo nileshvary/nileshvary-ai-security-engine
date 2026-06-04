@@ -134,6 +134,152 @@ class TestInvalidFormat:
             generator.generate([make_finding("LLM01")], output_format="bogus")
 
 
+class TestAutonomousAIMode:
+    """Generator merges Claude per-finding YAML when ai_client is provided."""
+
+    def _fake_client(self, analyses: list[dict] | dict) -> object:
+        """Return a stub ai_client whose generate_complete_analysis cycles
+        through the supplied analyses (or returns the same one each call).
+        """
+        from unittest.mock import MagicMock
+
+        client = MagicMock()
+        if isinstance(analyses, dict):
+            client.generate_complete_analysis.return_value = analyses
+        else:
+            client.generate_complete_analysis.side_effect = list(analyses)
+        return client
+
+    def test_no_ai_client_keeps_deterministic_behavior_unchanged(
+        self, generator: GuardrailGenerator, mixed_findings: list
+    ) -> None:
+        """Backward-compat: existing call sites without ai_client are untouched."""
+        before = generator.generate(mixed_findings, output_format="portkey")
+        after = generator.generate(mixed_findings, output_format="portkey")
+        # No Claude involvement, deterministic output.
+        assert before.input_filters == after.input_filters
+        assert before.output_filters == after.output_filters
+
+    def test_ai_client_yaml_rules_get_appended(
+        self, generator: GuardrailGenerator
+    ) -> None:
+        analysis = {
+            "why_dangerous": "x",
+            "why_fix_works": "y",
+            "guardrail_yaml": (
+                "input_guardrails:\n"
+                "  - id: claude-prompt-injection-block\n"
+                "    type: regex\n"
+                "    patterns:\n"
+                "      - 'jailbreak'\n"
+                "    on_match: block\n"
+                "output_guardrails:\n"
+                "  - id: claude-pii-mask\n"
+                "    type: regex\n"
+                "    on_match: redact\n"
+            ),
+        }
+        client = self._fake_client(analysis)
+        config = generator.generate(
+            [make_finding("LLM01")],
+            output_format="portkey",
+            ai_client=client,
+        )
+        input_ids = [r["id"] for r in config.input_filters]
+        output_ids = [r["id"] for r in config.output_filters]
+        assert "claude-prompt-injection-block" in input_ids
+        assert "claude-pii-mask" in output_ids
+        # Deterministic rule for LLM01 is still present alongside.
+        assert "prompt-injection-defense" in input_ids
+
+    def test_duplicate_ids_across_findings_are_deduped(
+        self, generator: GuardrailGenerator
+    ) -> None:
+        analysis = {
+            "guardrail_yaml": (
+                "input_guardrails:\n"
+                "  - id: claude-dedupe-me\n"
+                "    type: regex\n"
+                "    patterns: ['x']\n"
+            ),
+        }
+        client = self._fake_client(analysis)
+        config = generator.generate(
+            [make_finding("LLM01"), make_finding("LLM01")],
+            output_format="portkey",
+            ai_client=client,
+        )
+        ids = [r["id"] for r in config.input_filters]
+        assert ids.count("claude-dedupe-me") == 1
+
+    def test_malformed_yaml_is_dropped_silently(
+        self, generator: GuardrailGenerator
+    ) -> None:
+        """Bad YAML must not crash generate — we fall back to deterministic rules."""
+        client = self._fake_client({"guardrail_yaml": "not: valid: yaml: ::: :"})
+        # Should not raise.
+        config = generator.generate(
+            [make_finding("LLM01")],
+            output_format="portkey",
+            ai_client=client,
+        )
+        # The deterministic LLM01 rule still appears.
+        ids = [r["id"] for r in config.input_filters]
+        assert "prompt-injection-defense" in ids
+
+    def test_rate_limits_use_min_when_multiple_findings_supply_them(
+        self, generator: GuardrailGenerator
+    ) -> None:
+        analyses = [
+            {
+                "guardrail_yaml": (
+                    "rate_limits:\n"
+                    "  requests_per_minute: 30\n"
+                    "  tokens_per_minute: 200000\n"
+                ),
+            },
+            {
+                "guardrail_yaml": (
+                    "rate_limits:\n"
+                    "  requests_per_minute: 90\n"
+                    "  tokens_per_minute: 50000\n"
+                ),
+            },
+        ]
+        client = self._fake_client(analyses)
+        config = generator.generate(
+            # Use two LLM10 findings so deterministic rate limits also
+            # populate; the autonomous merger then takes the minimum
+            # against those.
+            [make_finding("LLM10"), make_finding("LLM10")],
+            output_format="portkey",
+            ai_client=client,
+        )
+        # Deterministic LLM10 starts at requests_per_minute=60,
+        # tokens_per_minute=100_000. Claude proposed (30, 200k) and
+        # (90, 50k). Strictest values per key:
+        #   requests_per_minute: min(60, 30, 90) = 30
+        #   tokens_per_minute: min(100_000, 200_000, 50_000) = 50_000
+        assert config.rate_limits["requests_per_minute"] == 30
+        assert config.rate_limits["tokens_per_minute"] == 50_000
+
+    def test_ai_call_failure_does_not_abort_generation(
+        self, generator: GuardrailGenerator
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        client = MagicMock()
+        client.generate_complete_analysis.return_value = None  # parse failure
+        config = generator.generate(
+            [make_finding("LLM01")],
+            output_format="portkey",
+            ai_client=client,
+        )
+        # Deterministic LLM01 rule still emitted.
+        ids = [r["id"] for r in config.input_filters]
+        assert "prompt-injection-defense" in ids
+
+
 class TestAgenticGuardrails:
     """OWASP Agentic Top 10 (2026) policy rules emitted alongside LLM rules."""
 

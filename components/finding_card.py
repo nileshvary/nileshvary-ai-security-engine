@@ -22,7 +22,7 @@ from integration_bridge.models import Finding
 from remediation_engine.models import RemediationResult
 from verifier.models import VerificationResult
 
-from components.ai_client import RemediAXAI
+from components.ai_client import RemediAXAI, finding_cache_key
 from components.owasp_content import get as owasp_get
 from components.owasp_content import (
     get_asi,
@@ -60,6 +60,44 @@ _STATUS_COLORS: dict[str, str] = {
     "FAILED": "#ff4444",
     "UNVERIFIABLE": "#8b949e",
 }
+
+
+def _ensure_autonomous_analysis(
+    ai_client: RemediAXAI | None,
+    finding: Finding,
+) -> dict | None:
+    """Return the autonomous Claude analysis for ``finding``, with caching.
+
+    Behavior:
+        * No ``ai_client`` (Basic mode) → returns ``None``; caller
+          uses pre-written OWASP content.
+        * Cache hit → returns the previously parsed analysis dict,
+          NO Claude call this rerun.
+        * Cache miss → calls ``generate_complete_analysis`` and
+          stores the result (even ``None``) so subsequent reruns of
+          the same finding don't keep retrying a failing call.
+
+    The cache lives in ``st.session_state["ai_cache"]`` so it
+    survives reruns within a session and is wiped on logout/refresh
+    (which is what we want — fresh upload of the same file gets
+    re-analyzed only if the file content changed).
+
+    Also writes ``ai_client.call_count`` through to
+    ``st.session_state["ai_call_count"]`` so the sidebar can render
+    the running total without holding a reference to the client.
+    """
+    if ai_client is None:
+        return None
+    import streamlit as st
+
+    cache: dict = st.session_state.setdefault("ai_cache", {})
+    key = finding_cache_key(finding)
+    if key in cache:
+        return cache[key]
+    analysis = ai_client.generate_complete_analysis(finding)
+    cache[key] = analysis  # may be None — we still don't want to retry
+    st.session_state["ai_call_count"] = ai_client.call_count
+    return analysis
 
 
 def _badge(text: str, bg: str, fg: str = "#000000") -> str:
@@ -336,18 +374,21 @@ def render_active_finding(
                 )
 
     # Wide AI explanation blocks.
-    # ``finding`` is passed to BOTH AI calls so Claude has the actual
-    # attack context. For ``explain_fix`` this is what stops Claude
-    # asking clarifying questions on LOG_ONLY findings — without the
-    # finding the prompt has nothing concrete to anchor to.
+    # Autonomous mode: a single ``generate_complete_analysis`` call
+    # per finding returns danger + fix + guardrail YAML + severity +
+    # category as one JSON blob. Cache the result by the finding's
+    # content hash so we don't re-spend tokens on every rerun.
+    # Fall back to the pre-written ``OWASP_CONTENT`` text on any
+    # parse failure or missing field.
+    analysis = _ensure_autonomous_analysis(ai_client, finding)
     danger_text = (
-        ai_client.explain_finding(finding) if ai_client is not None else None
-    ) or content["danger_explanation"]
+        (analysis.get("why_dangerous") if analysis else None)
+        or content["danger_explanation"]
+    )
     fix_text = (
-        ai_client.explain_fix(remediation_result, finding=finding)
-        if ai_client is not None
-        else None
-    ) or content["fix_explanation"]
+        (analysis.get("why_fix_works") if analysis else None)
+        or content["fix_explanation"]
+    )
 
     st.markdown(
         _ai_card("Why this is dangerous", danger_text, "#00d4ff"),

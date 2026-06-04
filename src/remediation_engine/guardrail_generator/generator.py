@@ -140,6 +140,8 @@ class GuardrailGenerator:
         self,
         findings: list[Finding],
         output_format: str = "portkey",
+        *,
+        ai_client: Any | None = None,
     ) -> GuardrailConfig:
         """Build a ``GuardrailConfig`` covering every category in ``findings``.
 
@@ -148,6 +150,16 @@ class GuardrailGenerator:
                 ``owasp_llm_category`` values determines which rules
                 appear in the output.
             output_format: One of ``"portkey"``, ``"litellm"``, ``"generic"``.
+            ai_client: Optional ``RemediAXAI``. When supplied AND
+                Claude returns a parseable analysis per finding, the
+                generator merges each finding's ``guardrail_yaml``
+                into the output (concatenated input/output rule lists
+                with de-duplication by ``id``, rate limits use the
+                minimum value seen across findings). When ``None``,
+                or when every Claude call fails to parse, falls back
+                to the deterministic hardcoded rules below — that
+                path is what every existing test exercises and is
+                fully backward compatible.
 
         Returns:
             A ``GuardrailConfig`` with the same data presented as parsed
@@ -223,6 +235,12 @@ class GuardrailGenerator:
                 output_rules.append({**_ASI_OUTPUT_POLICIES[asi_code],
                                      "patterns": list(_ASI_OUTPUT_POLICIES[asi_code]["patterns"])})
 
+        # Autonomous mode — merge per-finding Claude-generated YAML.
+        if ai_client is not None and findings:
+            self._merge_autonomous_yaml(
+                ai_client, findings, input_rules, output_rules, rate_limits
+            )
+
         rendered = self._render(output_format, input_rules, output_rules, rate_limits, categories, agentic_categories)
         yaml_export = yaml.safe_dump(rendered, sort_keys=False, default_flow_style=False)
 
@@ -233,6 +251,105 @@ class GuardrailGenerator:
             rate_limits=rate_limits,
             yaml_export=yaml_export,
         )
+
+    def _merge_autonomous_yaml(
+        self,
+        ai_client: Any,
+        findings: list[Finding],
+        input_rules: list[dict[str, Any]],
+        output_rules: list[dict[str, Any]],
+        rate_limits: dict[str, Any],
+    ) -> None:
+        """Append Claude-generated per-finding rules into the running lists.
+
+        For each finding we ask Claude for a complete analysis (one
+        call per finding, see ``ai_client.generate_complete_analysis``).
+        The returned ``guardrail_yaml`` field is parsed as YAML; any
+        ``input_guardrails`` / ``output_guardrails`` lists found are
+        appended to the running rule lists with de-duplication keyed
+        on the ``id`` field. ``rate_limits`` use the minimum value
+        seen across findings (strictest wins, per the design
+        chosen during the spec call).
+
+        All failures (Claude call error, JSON parse error, YAML parse
+        error, schema surprise) are swallowed — the deterministic
+        rules accumulated by ``generate`` above remain the floor.
+        """
+        # Pre-index existing rules so duplicate ``id`` values from
+        # Claude don't bloat the YAML on top of what we already have.
+        seen_input_ids = {r.get("id") for r in input_rules if r.get("id")}
+        seen_output_ids = {r.get("id") for r in output_rules if r.get("id")}
+
+        for finding in findings:
+            try:
+                analysis = ai_client.generate_complete_analysis(finding)
+            except Exception as exc:  # pragma: no cover - safety net
+                logger.warning(
+                    "generate_complete_analysis raised for probe %s: %s",
+                    finding.probe_name,
+                    exc,
+                )
+                continue
+            if not analysis:
+                continue
+            raw_yaml = analysis.get("guardrail_yaml")
+            if not raw_yaml or not isinstance(raw_yaml, str):
+                continue
+            try:
+                parsed = yaml.safe_load(raw_yaml)
+            except yaml.YAMLError as exc:
+                logger.warning(
+                    "Discarding malformed guardrail_yaml for probe %s: %s",
+                    finding.probe_name,
+                    exc,
+                )
+                continue
+            if not isinstance(parsed, dict):
+                continue
+
+            for rule in self._coerce_rule_list(parsed.get("input_guardrails")):
+                rid = rule.get("id")
+                if rid and rid in seen_input_ids:
+                    continue
+                if rid:
+                    seen_input_ids.add(rid)
+                input_rules.append(rule)
+
+            for rule in self._coerce_rule_list(parsed.get("output_guardrails")):
+                rid = rule.get("id")
+                if rid and rid in seen_output_ids:
+                    continue
+                if rid:
+                    seen_output_ids.add(rid)
+                output_rules.append(rule)
+
+            for key, value in self._coerce_rate_limits(parsed.get("rate_limits")).items():
+                if key in rate_limits:
+                    try:
+                        rate_limits[key] = min(int(rate_limits[key]), int(value))
+                    except (TypeError, ValueError):
+                        # Non-numeric — leave the existing value.
+                        continue
+                else:
+                    rate_limits[key] = value
+
+    @staticmethod
+    def _coerce_rule_list(value: Any) -> list[dict[str, Any]]:
+        """Return ``value`` as a list of rule dicts, dropping bad entries."""
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)]
+
+    @staticmethod
+    def _coerce_rate_limits(value: Any) -> dict[str, Any]:
+        """Return ``value`` as a flat dict of numeric rate limits."""
+        if not isinstance(value, dict):
+            return {}
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            if isinstance(k, str):
+                out[k] = v
+        return out
 
     def _render(
         self,

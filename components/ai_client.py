@@ -18,9 +18,14 @@ roughly 300 tokens per call.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import re
+from typing import Any
 
 from integration_bridge.models import Finding
+from integration_bridge.owasp_mapper import VALID_LLM_CATEGORIES
 from integration_bridge.owasp_taxonomy import LLM_TOP_10
 from remediation_engine.models import RemediationResult, RemediationStrategy
 
@@ -30,6 +35,76 @@ logger = logging.getLogger(__name__)
 _MODEL = "claude-haiku-4-5-20251001"
 _MAX_TOKENS = 400
 _TEMPERATURE = 0.3
+
+# The autonomous-analysis call returns a JSON blob with prose +
+# embedded YAML, so it needs significantly more output budget than
+# the terse explain_* methods.
+_AUTONOMOUS_MAX_TOKENS = 2000
+
+# Allowed severity values for the autonomous-analysis response.
+# Anything outside this set falls back to the parser-supplied
+# severity on the finding.
+_VALID_SEVERITIES: frozenset[str] = frozenset(
+    {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+)
+
+
+def finding_cache_key(finding: Finding) -> str:
+    """SHA-256 cache key derived from a finding's content.
+
+    Stable across sessions and re-uploads of the same file. Independent
+    of any field that isn't on the canonical ``Finding`` dataclass (no
+    ``uuid`` is needed; identity comes from the actual attack content).
+    """
+    payload = (
+        f"{finding.probe_name}|{finding.attack_prompt}|{finding.model_response}"
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _strip_code_fences(text: str) -> str:
+    """Strip markdown ``` / ```json fences and surrounding prose.
+
+    Claude routinely wraps JSON in fenced code blocks even when asked
+    not to. Be permissive: if a fenced block exists, return only its
+    interior; otherwise return the input unchanged. Also trims any
+    leading prose before the first ``{`` and trailing prose after the
+    last ``}`` so a JSON-like substring can be extracted from a
+    chatty response.
+    """
+    s = text.strip()
+    fence_match = re.search(
+        r"```(?:json)?\s*\n?(.*?)\n?```", s, flags=re.DOTALL
+    )
+    if fence_match:
+        return fence_match.group(1).strip()
+    first_brace = s.find("{")
+    last_brace = s.rfind("}")
+    if first_brace >= 0 and last_brace > first_brace:
+        return s[first_brace : last_brace + 1].strip()
+    return s
+
+
+def _parse_analysis_response(text: str) -> dict[str, Any] | None:
+    """Coerce a Claude response into the analysis dict, or ``None`` on failure.
+
+    Tries strict ``json.loads`` first; falls back to swapping single
+    quotes for double quotes (the spec example used single quotes —
+    Claude will occasionally mirror that style). Returns ``None`` if
+    neither strategy yields a dict — callers fall back to pre-written
+    text.
+    """
+    if not text:
+        return None
+    stripped = _strip_code_fences(text)
+    for candidate in (stripped, stripped.replace("'", '"')):
+        try:
+            parsed = json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
 # Per-attack context excerpts. Generous enough that Claude can read
 # the actual exploit instead of pattern-matching off the category
 # name, but bounded so token usage stays predictable.
@@ -123,6 +198,103 @@ class RemediAXAI:
         self.model = _MODEL
         self.max_tokens = _MAX_TOKENS
         self.temperature = _TEMPERATURE
+        # Per-instance counter so callers can show "AI calls this
+        # session" without reaching into st.session_state. The
+        # autonomous-mode finding card also writes this through to
+        # st.session_state.ai_call_count for the sidebar widget.
+        self.call_count: int = 0
+
+    # ------------------------------------------------------------------
+    # Autonomous analysis — ONE Claude call returns everything we
+    # need for a finding card (danger explanation, fix explanation,
+    # guardrail YAML, refined severity, refined OWASP category).
+    # ------------------------------------------------------------------
+
+    def generate_complete_analysis(
+        self,
+        finding: Finding,
+    ) -> dict[str, Any] | None:
+        """Return the full per-finding analysis dict, or ``None`` on failure.
+
+        Schema (all keys may be missing if the parse goes sideways —
+        callers must defend against absent fields):
+
+            why_dangerous: str
+            why_fix_works: str
+            guardrail_yaml: str           (raw YAML text)
+            severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+            owasp_category: "LLMnn"
+
+        ``severity`` and ``owasp_category`` are validated against the
+        canonical sets; invalid values are stripped before return so
+        downstream consumers can trust them.
+
+        Caller is expected to cache the result by
+        ``finding_cache_key(finding)`` so we don't re-spend tokens on
+        the same finding across reruns. ``self.call_count`` is
+        incremented per HTTP call regardless of cache hits at the
+        caller layer.
+        """
+        target_hint = "AI system"
+        if isinstance(finding.raw_data, dict):
+            # Best-effort target name from the underlying garak record;
+            # the spec referenced ``finding.notes.get('target', ...)``
+            # which doesn't exist on our schema. ``raw_data`` is the
+            # closest equivalent.
+            target_hint = str(
+                finding.raw_data.get("target")
+                or finding.raw_data.get("target_name")
+                or finding.raw_data.get("model_name")
+                or "AI system"
+            )
+        prompt = (
+            "You are an expert AI security researcher.\n"
+            "Analyze this vulnerability finding:\n\n"
+            f"Target: {target_hint}\n"
+            f"OWASP Category: {finding.owasp_llm_category}\n"
+            f"Attack Probe: {finding.probe_name}\n"
+            f"Attack Prompt: {finding.attack_prompt[:_PROMPT_EXCERPT_CHARS]}\n"
+            f"Model Response: {finding.model_response[:_RESPONSE_EXCERPT_CHARS]}\n"
+            f"Severity: {finding.severity}\n\n"
+            "Return a JSON object with these exact keys:\n"
+            "{\n"
+            '  "why_dangerous": "3 sentences explaining why this '
+            'specific attack is dangerous",\n'
+            '  "why_fix_works": "3 sentences explaining what '
+            'guardrail prevents this attack",\n'
+            '  "guardrail_yaml": "complete YAML guardrail with '
+            "input_guardrails and output_guardrails specific to "
+            'this exact attack pattern",\n'
+            '  "severity": "LOW or MEDIUM or HIGH or CRITICAL",\n'
+            '  "owasp_category": "correct LLM category code"\n'
+            "}\n\n"
+            "Return ONLY valid JSON. No explanation."
+        )
+        response = self._call(prompt, max_tokens=_AUTONOMOUS_MAX_TOKENS)
+        if response is None:
+            return None
+        parsed = _parse_analysis_response(response)
+        if parsed is None:
+            logger.warning(
+                "generate_complete_analysis: could not parse JSON from Claude "
+                "(probe=%s len=%d). Falling back to pre-written content.",
+                finding.probe_name,
+                len(response),
+            )
+            return None
+        # Validate the constrained fields. Unknown values are scrubbed
+        # so downstream code can safely treat them as authoritative.
+        severity = str(parsed.get("severity", "")).strip().upper()
+        if severity not in _VALID_SEVERITIES:
+            parsed.pop("severity", None)
+        else:
+            parsed["severity"] = severity
+        category = str(parsed.get("owasp_category", "")).strip().upper()
+        if category not in VALID_LLM_CATEGORIES:
+            parsed.pop("owasp_category", None)
+        else:
+            parsed["owasp_category"] = category
+        return parsed
 
     def explain_finding(self, finding: Finding) -> str | None:
         """Why is THIS specific response dangerous? 2 sentences, or ``None``.
@@ -334,12 +506,18 @@ class RemediAXAI:
         )
         return self._call(prompt)
 
-    def _call(self, prompt: str) -> str | None:
-        """Run a single one-shot Claude call. Returns ``None`` on any error."""
+    def _call(self, prompt: str, *, max_tokens: int | None = None) -> str | None:
+        """Run a single one-shot Claude call. Returns ``None`` on any error.
+
+        Increments ``self.call_count`` on every HTTP attempt — even
+        failures count, because the user-visible cost reflects API
+        usage not successful parses.
+        """
+        self.call_count += 1
         try:
             msg = self.client.messages.create(
                 model=self.model,
-                max_tokens=self.max_tokens,
+                max_tokens=max_tokens or self.max_tokens,
                 temperature=self.temperature,
                 messages=[{"role": "user", "content": prompt}],
             )
