@@ -19,7 +19,7 @@ from __future__ import annotations
 import html
 
 from integration_bridge.models import Finding
-from remediation_engine.models import RemediationResult
+from remediation_engine.models import RemediationResult, RemediationStrategy
 from verifier.models import VerificationResult
 
 from components.ai_client import RemediAXAI, finding_cache_key
@@ -333,8 +333,19 @@ def render_active_finding(
                 unsafe_allow_html=True,
             )
 
+        # Sanitization sub-card is hidden for LOG_ONLY findings — the
+        # remediator may still attach a ``response_sanitization`` with
+        # detected_issues / actions_taken even when no runtime patch
+        # applies, but surfacing "flagged N occurrence(s)" on a
+        # LOG_ONLY finding misleads the operator into thinking
+        # something was sanitized. Strategy gate keeps the block
+        # for HARDEN / SANITIZE / GUARDRAIL / BLOCK paths.
         san = remediation_result.response_sanitization
-        if san is not None and (san.detected_issues or san.actions_taken):
+        if (
+            remediation_result.strategy != RemediationStrategy.LOG_ONLY
+            and san is not None
+            and (san.detected_issues or san.actions_taken)
+        ):
             issues_html = "".join(
                 f'<div style="color:#e6edf3;">• {html.escape(i, quote=True)}</div>'
                 for i in san.detected_issues
@@ -640,8 +651,16 @@ def render_patch_panel(remediation_result: RemediationResult) -> None:
         )
         st.code(patch.patched_prompt, language="text")
 
+    # Same LOG_ONLY gate as in render_active_finding above — the
+    # View-patch panel must not advertise "Sanitization details" or
+    # before/after blocks for findings where nothing was actually
+    # sanitized at runtime.
     san = remediation_result.response_sanitization
-    if san is not None and (san.detected_issues or san.actions_taken):
+    if (
+        remediation_result.strategy != RemediationStrategy.LOG_ONLY
+        and san is not None
+        and (san.detected_issues or san.actions_taken)
+    ):
         st.markdown(
             '<div style="color:#00ff88;font-size:0.8rem;letter-spacing:0.08em;'
             'text-transform:uppercase;margin:14px 0 6px;">🧹 Sanitization details</div>',
