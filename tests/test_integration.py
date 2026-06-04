@@ -106,7 +106,14 @@ def test_summary_html_is_self_contained(tmp_path: Path) -> None:
     assert content.startswith("<!doctype html>")
     assert "<script>" not in content
     assert "http://" not in content
-    assert "https://" not in content
+    # The only outbound link is the RemediAX GitHub URL in section 7
+    # of the bug-report layout; everything else stays self-contained.
+    outbound = [
+        line
+        for line in content.splitlines()
+        if "https://" in line and "github.com/nileshvary/" not in line
+    ]
+    assert outbound == []
 
 
 def test_verification_report_has_seven_results(tmp_path: Path) -> None:

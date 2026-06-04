@@ -91,7 +91,11 @@ class OutputOrchestrator:
         artifacts.append(self.markdown_writer.write(remediation_results, output_dir))
         artifacts.append(
             self.html_writer.write(
-                findings, remediation_results, verification_report, output_dir
+                findings,
+                remediation_results,
+                verification_report,
+                output_dir,
+                guardrail_config=guardrail_config,
             )
         )
 
