@@ -535,40 +535,6 @@ def render_finding(
         )
 
 
-def render_listen_widget(finding: Finding, idx: int, total: int) -> None:
-    # VOICE IS FREE - NO API CALLS EVER
-    """Embed a 🔊 Listen button that reads the pre-written finding script.
-
-    The button is fully client-side (Web Speech API) — clicking it
-    triggers ``speechSynthesis.speak`` with the script built by
-    ``components.voice.build_finding_speech``. Content comes from
-    ``OWASP_CONTENT``, so the same text is read in Basic mode AND
-    Enhanced mode and there is **no API call, no cost, no latency**.
-
-    NEVER pass an ``ai_client`` or otherwise call Claude / OpenAI /
-    Anthropic from this function — TTS must remain free. The companion
-    test ``tests/app/test_voice.py::
-    test_render_listen_widget_uses_only_voice_module`` enforces that
-    only ``streamlit`` + ``components.voice`` symbols are referenced
-    here.
-    """
-    import streamlit as st
-
-    # Local imports keep the function self-contained AND make the
-    # zero-AI guarantee easy to audit at a glance.
-    from components.voice import (
-        build_finding_speech,
-        escape_for_speech,
-        get_voice_js,
-    )
-
-    script = escape_for_speech(build_finding_speech(finding, idx, total))
-    st.components.v1.html(
-        get_voice_js(script, manual_listen_button=True),
-        height=55,
-    )
-
-
 # ---------------------------------------------------------------------------
 # "View" panel renderers (triggered by the third action button in the review
 # screen). Both deliberately render clean structured content rather than the

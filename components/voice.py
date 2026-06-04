@@ -1,35 +1,42 @@
-"""Browser-side Web Speech API wrappers (TTS + STT).
+"""Browser-side Web Speech API for RemediAX (TTS).
 
 # VOICE IS FREE - NO API CALLS EVER
 
 This module is required to be Claude-free. It must not import or
 reference ``components.ai_client``, ``anthropic``, ``openai``, or any
-other LLM/transcription network client. All speech synthesis is
-performed by the browser via ``window.speechSynthesis``; all speech
-recognition by ``window.SpeechRecognition``. Content for finding
-read-aloud comes from the pre-written ``OWASP_CONTENT`` dictionary,
-NOT from any AI model.
+other LLM / transcription network client. All speech synthesis is
+performed by the browser via ``window.speechSynthesis``; per-finding
+content comes from the pre-written ``OWASP_CONTENT`` dictionary.
 
-The regression test ``tests/app/test_voice.py::
-test_voice_module_has_zero_ai_imports`` enforces this contract and
-will fail CI if anyone introduces a Claude / OpenAI / Anthropic
-import in this module.
+The regression tests
+``tests/app/test_voice.py::test_voice_module_has_zero_ai_imports`` and
+``test_voice_module_only_uses_safe_imports`` enforce this contract
+and fail CI if anyone introduces a Claude / OpenAI / Anthropic import
+in this module.
 
-Returns one HTML/JS blob to embed via ``st.components.v1.html``. The JS
-itself feature-detects ``window.speechSynthesis`` and
-``window.webkitSpeechRecognition``; on browsers without support, the
-controls render as disabled hints and no errors are thrown.
+Design (per the v1 spec):
 
-The voice-command → Python bridge uses ``window.location.search``: when
-a recognised command fires, the JS rewrites the URL to include
-``?cmd=approve`` (or skip, view, repeat, previous, summary). The next
-Streamlit run picks the value up via ``st.query_params`` and routes the
-action server-side.
+* ``inject_speech(text)`` mounts a zero-height iframe whose
+  ``<script>`` element calls ``speechSynthesis.speak(...)`` on load.
+* ``render_voice_test()`` mounts the same iframe with the canned
+  "voice test successful" message — used by the sidebar Test button.
+* ``render_listen_button(finding, idx, total)`` mounts a Streamlit
+  button per finding; on click it triggers ``inject_speech`` with the
+  pre-written script for that finding. Visible regardless of the TTS
+  toggle (manual playback always available).
+* ``auto_read_on_navigation(finding, idx, total, *, enabled)``
+  auto-plays when the TTS toggle is on AND the user navigates to a
+  new finding (tracked via session state). No-op otherwise.
+* ``consume_voice_command()`` is a stub that always returns ``None``
+  — STT is "basic stub for now" per the v1 spec.
+
+Voice features must work identically for Basic / Premium / Admin
+users. No tier checks exist in this module; callers should not add
+them.
 """
 
 from __future__ import annotations
 
-import html
 import json
 from typing import TYPE_CHECKING
 
@@ -37,184 +44,50 @@ if TYPE_CHECKING:
     from integration_bridge.models import Finding
 
 
-_VOICE_COMMANDS: dict[str, str] = {
-    "approve": "approve",
-    "yes": "approve",
-    "patch": "approve",
-    "confirm": "approve",
-    "skip": "skip",
-    "no": "skip",
-    "dismiss": "skip",
-    "next": "skip",
-    "view": "view",
-    "show": "view",
-    "details": "view",
-    "repeat": "repeat",
-    "again": "repeat",
-    "previous": "previous",
-    "back": "previous",
-    "last": "previous",
-    "summary": "summary",
-    "overview": "summary",
-}
+# Sidebar Test button JS, verbatim from the spec.
+_TEST_SPEECH_SCRIPT = (
+    "<script>"
+    "window.speechSynthesis.cancel();"
+    "var msg = new SpeechSynthesisUtterance("
+    "'RemediAX voice test successful. "
+    "Voice features are working correctly.'"
+    ");"
+    "msg.rate = 0.9;"
+    "msg.lang = 'en-US';"
+    "window.speechSynthesis.speak(msg);"
+    "</script>"
+)
 
 
-def get_voice_js(
-    text_to_speak: str | None = None,
-    listen: bool = False,
-    *,
-    manual_listen_button: bool = False,
-) -> str:
-    # VOICE IS FREE - NO API CALLS EVER
-    """Build a self-contained HTML+JS blob for TTS and (optional) STT.
+def _safe_json(value: str) -> str:
+    """JSON-encode + escape ``</`` so the result is safe inside a ``<script>`` tag.
 
-    Args:
-        text_to_speak: The text to feed the Web Speech API. Behavior
-            depends on ``manual_listen_button``:
-
-            * ``False`` (default): page speaks immediately on load.
-            * ``True``: speech is gated behind a 🔊 Listen button —
-              nothing is read until the user clicks.
-        listen: When True, the page also wires up a 🎤 microphone
-            button that starts Web Speech recognition for voice
-            commands (approve / skip / view / repeat / etc.).
-        manual_listen_button: When True, suppress auto-speak and
-            render a 🔊 Listen button that the user clicks to hear
-            ``text_to_speak``. Used by the review screen's per-
-            finding listen widget.
-
-    Returns:
-        A complete ``<div><script>`` blob ready for
-        ``st.components.v1.html(..., height=...)``.
+    Plain ``json.dumps`` does NOT escape ``</script>``; embedding a
+    raw response containing ``</script>`` would break out of the
+    inline script and create an XSS vector. The ``</`` -> ``<\\/``
+    swap is the canonical mitigation and leaves the value a valid
+    JSON-encoded string.
     """
-    # json.dumps does NOT escape ``</`` — embedded ``</script>`` in
-    # user-supplied text would break out of the inline <script> tag.
-    # Replace every ``</`` with ``<\/`` (still valid JSON / JS, but
-    # safe inside an HTML <script> block). Apply to every JSON-
-    # encoded value we drop into the template.
-    def _safe_json(value: object) -> str:
-        return json.dumps(value).replace("</", "<\\/")
+    return json.dumps(value).replace("</", "<\\/")
 
-    speak_text_json = _safe_json(text_to_speak or "")
-    commands_json = _safe_json(_VOICE_COMMANDS)
-    listen_flag = "true" if listen else "false"
-    auto_speak_flag = (
-        "true" if (text_to_speak and not manual_listen_button) else "false"
+
+def _speak_script(text: str) -> str:
+    """Return a self-contained ``<script>`` blob that speaks ``text``.
+
+    Cancels any in-flight utterance first so consecutive button
+    clicks don't queue up overlapping speech. ``rate=0.9`` and
+    ``lang='en-US'`` match the spec's sidebar Test JS for
+    consistency.
+    """
+    return (
+        "<script>"
+        "window.speechSynthesis.cancel();"
+        f"var msg = new SpeechSynthesisUtterance({_safe_json(text)});"
+        "msg.rate = 0.9;"
+        "msg.lang = 'en-US';"
+        "window.speechSynthesis.speak(msg);"
+        "</script>"
     )
-    show_listen_button_flag = (
-        "true" if (text_to_speak and manual_listen_button) else "false"
-    )
-
-    return f"""
-<div id="remediax-voice" style="font-family: monospace; color: #8b949e; padding: 6px 0;">
-  <span id="rx-voice-status">🔈 Voice ready</span>
-  <button id="rx-listen-btn" type="button"
-          style="margin-left: 12px; background:#0d1117; color:#00ff88;
-                 border:1px solid #00ff88; border-radius:4px; padding:4px 10px;
-                 cursor:pointer; font-weight:600; display:none;">
-    🔊 Listen
-  </button>
-  <button id="rx-mic-btn" type="button"
-          style="margin-left: 12px; background:#0d1117; color:#00d4ff;
-                 border:1px solid #00d4ff; border-radius:4px; padding:4px 10px;
-                 cursor:pointer; display:none;">
-    🎤 Listen
-  </button>
-</div>
-<script>
-(function() {{
-  const SPEAK_TEXT = {speak_text_json};
-  const COMMANDS = {commands_json};
-  const SHOULD_LISTEN = {listen_flag};
-  const AUTO_SPEAK = {auto_speak_flag};
-  const SHOW_LISTEN_BTN = {show_listen_button_flag};
-  const statusEl = document.getElementById("rx-voice-status");
-  const listenBtn = document.getElementById("rx-listen-btn");
-  const micBtn = document.getElementById("rx-mic-btn");
-
-  function speak(text) {{
-    if (!text || !window.speechSynthesis) return;
-    try {{
-      window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = "en-US";
-      u.rate = 0.95;
-      u.pitch = 1.0;
-      u.volume = 1.0;
-      const voices = window.speechSynthesis.getVoices();
-      const preferred = voices.find(v =>
-        v.name.includes("Google") && v.lang === "en-US"
-      );
-      if (preferred) u.voice = preferred;
-      window.speechSynthesis.speak(u);
-    }} catch (err) {{
-      // Silently no-op — TTS is best-effort.
-    }}
-  }}
-
-  function setQueryCommand(cmd) {{
-    try {{
-      const url = new URL(window.parent.location.href);
-      url.searchParams.set("cmd", cmd);
-      url.searchParams.set("ts", Date.now().toString());
-      window.parent.location.replace(url.toString());
-    }} catch (err) {{
-      // Cross-origin: ignore.
-    }}
-  }}
-
-  function startListening() {{
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return;
-    const r = new SR();
-    r.lang = "en-US";
-    r.continuous = false;
-    r.interimResults = false;
-    r.onresult = (e) => {{
-      const transcript = e.results[0][0].transcript.toLowerCase().trim();
-      statusEl.textContent = "Heard: " + transcript;
-      for (const phrase in COMMANDS) {{
-        if (transcript.includes(phrase)) {{
-          setQueryCommand(COMMANDS[phrase]);
-          return;
-        }}
-      }}
-    }};
-    r.onerror = () => {{ statusEl.textContent = "🔈 Voice idle"; }};
-    r.onend = () => {{ statusEl.textContent = "🔈 Voice idle"; }};
-    statusEl.textContent = "🎤 Listening...";
-    try {{ r.start(); }} catch (err) {{
-      statusEl.textContent = "🔈 Voice unavailable";
-    }}
-  }}
-
-  // Auto-speak on load (legacy behavior — used by complete /
-  // remediation-complete screens that emit a short status string).
-  if (SPEAK_TEXT && AUTO_SPEAK) {{
-    if (window.speechSynthesis &&
-        window.speechSynthesis.getVoices().length === 0) {{
-      window.speechSynthesis.onvoiceschanged = () => speak(SPEAK_TEXT);
-    }} else {{
-      speak(SPEAK_TEXT);
-    }}
-  }}
-
-  // Manual 🔊 Listen button — used by per-finding review widgets
-  // so the user controls when (and whether) the pre-written content
-  // gets read aloud.
-  if (SPEAK_TEXT && SHOW_LISTEN_BTN) {{
-    listenBtn.style.display = "inline-block";
-    listenBtn.addEventListener("click", () => speak(SPEAK_TEXT));
-  }}
-
-  const sr = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (SHOULD_LISTEN && sr) {{
-    micBtn.style.display = "inline-block";
-    micBtn.addEventListener("click", startListening);
-  }}
-}})();
-</script>
-"""
 
 
 def build_finding_speech(
@@ -223,31 +96,20 @@ def build_finding_speech(
     total: int,
 ) -> str:
     # VOICE IS FREE - NO API CALLS EVER
-    """Return the pre-written TTS script for one finding.
+    """Return the spec-format TTS script for one finding.
 
-    Pulled entirely from ``components.owasp_content.OWASP_CONTENT`` so
-    the same text is read in Basic mode AND Enhanced mode — no Claude
-    call, no API cost. Read order matches the product spec exactly,
-    one item per line so a screen-reader pauses naturally between
-    sections:
+    Spec read-order (one item per line so the screen-reader pauses
+    naturally between sections):
 
         Finding {n} of {total}.
-        Category: {name}. Severity: {sev}.
-        Why this is dangerous: {danger_explanation}
-        Why this fix works: {fix_explanation}
+        Category: {owasp_name}.
+        Severity: {severity}.
+        Why this is dangerous: {danger_text}
+        Why this fix works: {fix_text}
 
-    Args:
-        finding: The ``Finding`` whose category drives the lookup.
-        idx: Zero-based index of this finding in the review list.
-            Surfaced to the user as ``idx + 1``.
-        total: Total finding count in the review.
-
-    Returns:
-        A single string ready to hand to ``get_voice_js`` /
-        ``escape_for_speech``.
+    Content comes from ``OWASP_CONTENT`` only — no AI mode, no API
+    cost, no network. Identical playback in Basic / Premium / Admin.
     """
-    # Local import to keep this module standalone for tests that
-    # don't need the heavyweight owasp_content load path.
     from components.owasp_content import OWASP_CONTENT
 
     code = finding.owasp_llm_category
@@ -255,46 +117,111 @@ def build_finding_speech(
     name = content.get("name") or code
     danger = (content.get("danger_explanation") or "").strip()
     fix = (content.get("fix_explanation") or "").strip()
-
     return (
         f"Finding {idx + 1} of {total}.\n"
-        f"Category: {name}. Severity: {finding.severity}.\n"
+        f"Category: {name}.\n"
+        f"Severity: {finding.severity}.\n"
         f"Why this is dangerous: {danger}\n"
         f"Why this fix works: {fix}"
     )
 
 
-def consume_voice_command() -> str | None:
-    """Return the latest voice command from Streamlit's query params, if any.
+def inject_speech(text: str) -> None:
+    # VOICE IS FREE - NO API CALLS EVER
+    """Mount a zero-height iframe whose script speaks ``text`` on load.
 
-    The query param is cleared after reading so subsequent reruns do
-    not re-fire the same command.
+    Side-effecting: must be called from inside a Streamlit run. Empty
+    text is a no-op so callers don't need to guard ``inject_speech``.
+    """
+    if not text:
+        return
+    import streamlit as st
 
-    Returns:
-        One of ``"approve"``, ``"skip"``, ``"view"``, ``"repeat"``,
-        ``"previous"``, ``"summary"``, or ``None`` if no command is set.
+    st.components.v1.html(_speak_script(text), height=0)
+
+
+def render_voice_test() -> None:
+    # VOICE IS FREE - NO API CALLS EVER
+    """Sidebar Test button payload — mounts the spec's canned utterance.
+
+    Called only when the user clicks the Streamlit "🔊 Test" button.
+    The iframe runs the JS once on mount; subsequent reruns (when the
+    button is NOT clicked) don't re-emit speech.
     """
     import streamlit as st
 
-    params = st.query_params
-    cmd = params.get("cmd")
-    if cmd is None:
-        return None
-    if isinstance(cmd, list):
-        cmd = cmd[0] if cmd else None
-    # Clear ONLY the voice-command keys so the same command does not
-    # re-fire on the next rerun. Other query params (notably the
-    # remember-me token ``t``) must be preserved or auto-login breaks.
-    for key in ("cmd", "ts"):
-        try:
-            if key in st.query_params:
-                del st.query_params[key]
-        except Exception:  # pragma: no cover - defensive
-            pass
-    valid = {"approve", "skip", "view", "repeat", "previous", "summary"}
-    return cmd if cmd in valid else None
+    st.components.v1.html(_TEST_SPEECH_SCRIPT, height=0)
 
 
-def escape_for_speech(text: str) -> str:
-    """Strip markup so screen-readers / TTS produce clean prose."""
-    return html.unescape(text)
+def render_listen_button(
+    finding: Finding,
+    idx: int,
+    total: int,
+) -> None:
+    # VOICE IS FREE - NO API CALLS EVER
+    """Render the per-finding 🔊 Listen button + click handler.
+
+    Always visible — the TTS toggle controls auto-read elsewhere, but
+    the manual Listen button stays available regardless. Works
+    identically for Basic, Premium, and Admin users; no tier check
+    appears anywhere in this function.
+    """
+    import streamlit as st
+
+    if st.button(
+        "🔊 Listen",
+        key=f"voice-listen-btn-{idx}",
+        use_container_width=True,
+    ):
+        inject_speech(build_finding_speech(finding, idx, total))
+
+
+def auto_read_on_navigation(
+    finding: Finding,
+    idx: int,
+    total: int,
+    *,
+    enabled: bool,
+) -> None:
+    # VOICE IS FREE - NO API CALLS EVER
+    """Auto-play the finding's TTS when the user navigates to it.
+
+    Only fires when ``enabled`` is True AND the finding index has
+    changed since the previous rerun (tracked in
+    ``st.session_state["voice_last_idx"]``). Returning early when
+    ``enabled`` is False also clears the tracker so re-enabling the
+    toggle on the same finding triggers a fresh playback.
+    """
+    import streamlit as st
+
+    if not enabled:
+        st.session_state.pop("voice_last_idx", None)
+        return
+    if st.session_state.get("voice_last_idx") == idx:
+        return
+    st.session_state["voice_last_idx"] = idx
+    inject_speech(build_finding_speech(finding, idx, total))
+
+
+def render_voice_command_mic() -> None:
+    # VOICE IS FREE - NO API CALLS EVER
+    """Render the mic indicator when the voice-commands toggle is on.
+
+    Stub for the v1 voice commands feature — surfaces a visual cue
+    so users know the toggle is engaged, but does not yet wire up
+    the underlying Speech Recognition handler.
+    """
+    import streamlit as st
+
+    st.caption("🎤 Voice commands enabled (basic mode)")
+
+
+def consume_voice_command() -> str | None:
+    # VOICE IS FREE - NO API CALLS EVER
+    """Stub: voice-command STT is not wired in the v1 rewrite.
+
+    Kept so existing call sites in ``app.py`` don't crash; always
+    returns ``None`` so no command is routed. A future revision will
+    implement Speech Recognition + ``?cmd=...`` routing.
+    """
+    return None

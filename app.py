@@ -48,7 +48,6 @@ from components.ai_client import RemediAXAI
 from components.api_key_url import decrypt_api_key, encrypt_api_key
 from components.finding_card import (
     render_finding,
-    render_listen_widget,
     render_patch_panel,
     render_tools_panel,
 )
@@ -66,9 +65,12 @@ from components.garak_targets import (
 )
 from components.security_score import calculate_security_score, score_status
 from components.voice import (
+    auto_read_on_navigation,
     consume_voice_command,
-    escape_for_speech,
-    get_voice_js,
+    inject_speech,
+    render_listen_button,
+    render_voice_command_mic,
+    render_voice_test,
 )
 from database import (
     FirebaseAuthError,
@@ -1469,14 +1471,15 @@ def _get_ai_client() -> RemediAXAI | None:
 
 
 def _maybe_emit_voice(text: str) -> None:
-    if st.session_state.tts_enabled or st.session_state.voice_enabled:
-        st.components.v1.html(
-            get_voice_js(
-                escape_for_speech(text) if st.session_state.tts_enabled else None,
-                listen=st.session_state.voice_enabled,
-            ),
-            height=60,
-        )
+    """Emit a screen-level TTS announcement when the toggle is on.
+
+    Thin wrapper around ``inject_speech`` so the render_complete /
+    remediation-complete paths can keep their existing call shape.
+    No-op when ``tts_enabled`` is False. Per-finding playback uses
+    ``render_listen_button`` + ``auto_read_on_navigation`` directly.
+    """
+    if st.session_state.tts_enabled and text:
+        inject_speech(text)
 
 
 def _apply_voice_command_to_review() -> None:
@@ -1657,20 +1660,20 @@ def render_sidebar() -> None:
 
         st.divider()
         st.markdown("**Voice features**")
+        st.caption(
+            "Voice features work for every tier — Basic, Premium, and "
+            "Admin all get the same experience."
+        )
         st.session_state.tts_enabled = st.toggle(
             "🔊 Text-to-Speech", value=st.session_state.tts_enabled
         )
         st.session_state.voice_enabled = st.toggle(
             "🎤 Voice commands", value=st.session_state.voice_enabled
         )
+        if st.session_state.voice_enabled:
+            render_voice_command_mic()
         if st.button("🔊 Test", use_container_width=True):
-            st.components.v1.html(
-                get_voice_js(
-                    "RemediAX voice is working. You can approve or skip findings.",
-                    listen=False,
-                ),
-                height=60,
-            )
+            render_voice_test()
 
         st.divider()
         st.markdown("**Scan history**")
@@ -2813,20 +2816,17 @@ def render_review() -> None:
     render_finding(finding, rem_result, ver_result, ai_client)
 
     # VOICE IS FREE - NO API CALLS EVER
-    # 🔊 Listen — always rendered. Clicking it reads the pre-written
-    # finding script (number, category + severity, why dangerous, why
-    # fix works) via the browser's Web Speech API. Content comes from
-    # OWASP_CONTENT, so playback is identical in Basic and Enhanced
-    # mode and costs nothing. We don't gate on tts_enabled here: the
-    # sidebar toggle controls auto-emit elsewhere; the per-finding
-    # Listen button is user-initiated and always available.
-    #
-    # IMPORTANT: do NOT pass ``ai_client`` to this call — TTS must
-    # remain claudeless. The widget reads OWASP_CONTENT only. Any
-    # Claude costs you're seeing on the review screen come from
-    # ``render_finding`` above (the on-screen explanation cards),
-    # NOT from this Listen button.
-    render_listen_widget(finding, idx, total)
+    # Per-finding 🔊 Listen button is ALWAYS rendered — works
+    # identically for Basic / Premium / Admin, no tier check anywhere
+    # in voice code. The TTS toggle controls AUTO-read on navigation
+    # (auto_read_on_navigation below). The Listen button stays
+    # available regardless of toggle state so manual playback is
+    # always one click away. Pre-written script from OWASP_CONTENT;
+    # no Claude / API call involved.
+    render_listen_button(finding, idx, total)
+    auto_read_on_navigation(
+        finding, idx, total, enabled=st.session_state.tts_enabled
+    )
 
     is_esc = finding.owasp_llm_category in ESCALATION_CATEGORIES
     approve_label = "✅ Note it" if is_esc else "✅ Approve"
