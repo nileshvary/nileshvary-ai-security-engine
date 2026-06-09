@@ -26,26 +26,42 @@ _PROBE_TO_LLM: tuple[tuple[str, str], ...] = (
     ("atkgen.UnboundedOutput", "LLM10"),
 
     # ── LLM01 — Prompt Injection ─────────────────────────────────────
+    ("agent_breaker.*", "LLM01"),   # Garak 0.15: agentic goal-hijack probes
+    ("badchars.*", "LLM01"),        # Adversarial character injection
     ("dan.*", "LLM01"),
-    ("promptinject.*", "LLM01"),
-    ("goodside.*", "LLM01"),
+    ("dra.*", "LLM01"),             # Document Reference Attack (latent injection)
     ("encoding.*", "LLM01"),
+    ("fitd.*", "LLM01"),            # Foot-in-the-door social engineering
     ("gcg.*", "LLM01"),
-    ("latentinjection.*", "LLM01"),
+    ("glitch.*", "LLM01"),          # Adversarial glitch tokens
+    ("goodside.*", "LLM01"),
     ("grandma.*", "LLM01"),
     ("knownbadsignatures.*", "LLM01"),
+    ("latentinjection.*", "LLM01"),
+    ("promptinject.*", "LLM01"),
+    ("sata.*", "LLM01"),            # Structured Adversarial Text Attack
+    ("smuggling.*", "LLM01"),       # Prompt smuggling via encoding layers
+    ("suffix.*", "LLM01"),          # GCG suffix attacks (e.g. GCGCached)
+    ("tap.*", "LLM01"),             # Tree of Attacks with Pruning
+    ("visual_jailbreak.*", "LLM01"), # Multimodal prompt injection
     # Broad ``atkgen.*`` fallback comes AFTER the specific atkgen.X
     # overrides above so e.g. atkgen.Tox still resolves to LLM01.
     ("atkgen.*", "LLM01"),
+
+    # ── LLM02 — Sensitive Information Disclosure ─────────────────────
+    ("apikey.*", "LLM02"),          # API key / credential extraction probes
 
     # ── LLM03 — Supply Chain ────────────────────────────────────────
     # (no glob — exact atkgen.SupplyChain handled above)
 
     # ── LLM05 — Improper Output Handling ─────────────────────────────
-    ("xss.*", "LLM05"),
-    ("sqli.*", "LLM05"),
-    ("markdownexfil.*", "LLM05"),
+    ("ansiescape.*", "LLM05"),      # ANSI escape injection in outputs
     ("exploitation.*", "LLM05"),
+    ("fileformats.*", "LLM05"),     # Malicious payload in file-format outputs
+    ("markdownexfil.*", "LLM05"),
+    ("sqli.*", "LLM05"),
+    ("web_injection.*", "LLM05"),   # XSS / markdown exfil via web rendering
+    ("xss.*", "LLM05"),
 
     # ── LLM06 — Excessive Agency ────────────────────────────────────
     ("malwaregen.*", "LLM06"),
@@ -63,17 +79,23 @@ _PROBE_TO_LLM: tuple[tuple[str, str], ...] = (
     ("autonomous_action.*", "LLM06"),
 
     # ── LLM07 — System Prompt Leakage ───────────────────────────────
-    ("promptleak.*", "LLM07"),
     ("leakreplay.*", "LLM07"),
+    ("promptleak.*", "LLM07"),
+    ("sysprompt_extraction.*", "LLM07"),  # Garak 0.15 canonical probe family
     ("systemprompt.*", "LLM07"),
 
-    # ── LLM09 — Misinformation ──────────────────────────────────────
+    # ── LLM09 — Misinformation / Overreliance ───────────────────────
     ("continuation.*", "LLM09"),
-    ("realtoxicity.*", "LLM09"),
+    ("donotanswer.*", "LLM09"),     # Tests refusal-to-answer for harmful topics
     ("hallucination.*", "LLM09"),
-    ("packagehallucination.*", "LLM09"),
+    ("lmrc.*", "LLM09"),            # Broad lmrc.* fallback (QuackMedicine exact above)
     ("misleading.*", "LLM09"),
+    ("packagehallucination.*", "LLM09"),
+    ("phrasing.*", "LLM09"),        # Future/past tense prompt framing
+    ("realtoxicity.*", "LLM09"),
+    ("realtoxicityprompts.*", "LLM09"),  # Garak 0.15 canonical name
     ("snowball.*", "LLM09"),
+    ("topic.*", "LLM09"),           # Controversial topic probes
 
     # ── LLM10 — Unbounded Consumption ───────────────────────────────
     ("av_spam_scanning.*", "LLM10"),
@@ -82,6 +104,7 @@ _PROBE_TO_LLM: tuple[tuple[str, str], ...] = (
     # LLM side, while direct ASI08 attribution is added below.
     ("cascading.*", "LLM10"),
     ("circuit_breaker.*", "LLM10"),
+    ("divergence.*", "LLM10"),      # Repetition / token divergence attacks
 )
 
 _DEFAULT_LLM = "LLM01"

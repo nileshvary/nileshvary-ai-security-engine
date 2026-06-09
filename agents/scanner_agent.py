@@ -168,14 +168,40 @@ class ScannerAgent:
 
     @staticmethod
     def _pyrit_dict_to_finding(raw: dict[str, Any]) -> Finding:
-        """Convert a PyRITRunner result dict to a schemas Finding."""
+        """Convert a PyRITRunner result dict to a schemas Finding.
+
+        Agentic codes come from two sources (merged, deduped):
+        1. ``raw["agentic"]`` — codes declared in the probe definition itself
+           (for ASI categories that don't cross-map from any LLM code).
+        2. ``OwaspMapper.map_llm_to_agentic(llm_code)`` — standard LLM→ASI
+           cross-map for codes that do have an established mapping.
+        """
+        try:
+            from integration_bridge.owasp_mapper import OwaspMapper
+        except ImportError:
+            OwaspMapper = None  # type: ignore[assignment,misc]
+
+        llm_code = raw.get("owasp", "LLM01")
+        direct_agentic: list[str] = raw.get("agentic", [])
+
+        if OwaspMapper is not None:
+            cross_mapped = OwaspMapper.map_llm_to_agentic(llm_code)
+        else:
+            cross_mapped = []
+
+        merged: list[str] = []
+        for code in (*direct_agentic, *cross_mapped):
+            if code not in merged:
+                merged.append(code)
+
         return Finding(
             probe_name=raw["probe_name"],
             detector_name="pyrit.HeuristicDetector",
             attack_prompt=raw["attack_prompt"],
             model_response=raw["model_response"],
             is_successful_attack=raw.get("is_successful_attack", False),
-            owasp_llm_category=raw.get("owasp", "LLM01"),
+            owasp_llm_category=llm_code,
+            owasp_agentic_categories=merged,
             severity="MEDIUM",
             source="pyrit",
             raw_data=raw,
