@@ -251,3 +251,10 @@ _remediax_runs/
 
 # Local project context — contains personal details and embargoed vuln data
 REMEDIAX_MASTER_CONTEXT.md
+
+# docs/ — large generated files ignored; docs/architecture/ stays tracked
+docs/pdfs/**
+docs/reports/**
+docs/research/**
+docs/exports/**
+!docs/**/.gitkeep
