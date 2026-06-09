@@ -18,6 +18,11 @@ webapp = [
     "anthropic>=0.25.0",
     "firebase-admin>=6.0.0",
 ]
+scanners = [
+    "pyrit>=0.14.0",
+    "llm-guard>=0.3.16",
+    "nemoguardrails>=0.22.0",
+]
 
 [project.scripts]
 ai-security-engine = "ai_security_engine.__main__:main"
