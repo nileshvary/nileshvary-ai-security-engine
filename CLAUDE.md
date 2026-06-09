@@ -34,3 +34,4 @@ The `remediation_engine` package contains three sub-modules:
 - **Always ask before installing new packages.** Do not add to dependencies or run `pip install` without explicit approval.
 - Put all source code under `src/`, all tests under `tests/`.
 - When adding a new pipeline stage or sub-module, create matching `tests/` package mirror.
+- **Never add `Co-Authored-By` to any commit message.** Author is always Nileshwari Kadgale only.
