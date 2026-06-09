@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -220,3 +221,23 @@ def test_out_of_band_batch_all_get_notes(
         assert result.strategy is RemediationStrategy.LOG_ONLY
         assert result.confidence == 0.0
         assert result.notes
+
+
+# ---------------------------------------------------------------------------
+# Claude API: ai_client forwarded to GuardrailGenerator.
+# ---------------------------------------------------------------------------
+
+
+def test_ai_client_forwarded_to_guardrail_generator() -> None:
+    mock_ai = MagicMock()
+    mock_ai.generate_complete_analysis.return_value = None
+    orchestrator = RemediationOrchestrator(ai_client=mock_ai)
+    orchestrator.remediate_findings([make_finding("LLM01")])
+    mock_ai.generate_complete_analysis.assert_called_once()
+
+
+def test_no_ai_client_still_produces_results() -> None:
+    orchestrator = RemediationOrchestrator(ai_client=None)
+    results = orchestrator.remediate_findings([make_finding("LLM01")])
+    assert len(results) == 1
+    assert results[0].guardrail_config is not None

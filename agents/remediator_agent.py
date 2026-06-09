@@ -37,7 +37,7 @@ if str(_SRC) not in sys.path:
 
 
 class RemediatorAgent:
-    """Coordinate LLM Guard, NeMo, and the remediation engine for each finding.
+    """Coordinate LLM Guard, NeMo, Claude API, and the remediation engine for each finding.
 
     Args:
         llmguard_runner: Optional ``LLMGuardRunner`` instance. When provided,
@@ -52,6 +52,13 @@ class RemediatorAgent:
                          Defaults to ``"generic"`` (vendor-neutral).
         nemo_output_path: Where to save the NeMo config YAML when
                           ``nemo_runner`` is provided.
+        ai_client:       Optional ``RemediAXAI`` instance. When supplied,
+                         Claude generates custom guardrail patterns per finding
+                         on top of the hardcoded deterministic rules.
+        anthropic_api_key: Convenience shortcut — if ``ai_client`` is not given
+                           but this key is provided, a ``RemediAXAI`` client is
+                           constructed automatically. Ignored when ``ai_client``
+                           is already set.
     """
 
     def __init__(
@@ -61,12 +68,22 @@ class RemediatorAgent:
         config: Any | None = None,
         guardrail_format: str = "generic",
         nemo_output_path: str = "artifacts/nemo_guardrails.yaml",
+        ai_client: Any | None = None,
+        anthropic_api_key: str | None = None,
     ) -> None:
         self._llmguard = llmguard_runner
         self._nemo = nemo_runner
         self._config = config
         self._guardrail_format = guardrail_format
         self._nemo_output_path = Path(nemo_output_path)
+
+        if ai_client is not None:
+            self._ai_client = ai_client
+        elif anthropic_api_key:
+            from components.ai_client import RemediAXAI
+            self._ai_client = RemediAXAI(api_key=anthropic_api_key)
+        else:
+            self._ai_client = None
 
     # ------------------------------------------------------------------ #
     #  Public API                                                          #
@@ -117,7 +134,10 @@ class RemediatorAgent:
         # Core remediation via existing RemediationOrchestrator
         from remediation_engine.orchestrator import RemediationOrchestrator
 
-        orchestrator = RemediationOrchestrator(guardrail_format=self._guardrail_format)
+        orchestrator = RemediationOrchestrator(
+            guardrail_format=self._guardrail_format,
+            ai_client=self._ai_client,
+        )
         results = orchestrator.remediate_findings(
             findings,
             original_prompt=original_system_prompt or None,

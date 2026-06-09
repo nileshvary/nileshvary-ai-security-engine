@@ -14,7 +14,7 @@ The orchestrator is the single entry point for Phase 3. It:
 from __future__ import annotations
 
 import logging
-from typing import Final
+from typing import Any, Final
 
 from integration_bridge.models import Finding
 
@@ -103,6 +103,7 @@ class RemediationOrchestrator:
         response_remediator: ResponseRemediator | None = None,
         guardrail_generator: GuardrailGenerator | None = None,
         guardrail_format: str = "portkey",
+        ai_client: Any | None = None,
     ) -> None:
         """Initialize the orchestrator.
 
@@ -116,11 +117,15 @@ class RemediationOrchestrator:
             guardrail_format: One of ``"portkey"``, ``"litellm"``,
                 ``"generic"`` — the format used when building the global
                 guardrail config.
+            ai_client: Optional ``RemediAXAI`` instance. When supplied,
+                ``GuardrailGenerator`` calls Claude per finding to produce
+                custom guardrail patterns on top of the hardcoded rules.
         """
         self.prompt_remediator = prompt_remediator or PromptRemediator()
         self.response_remediator = response_remediator or ResponseRemediator()
         self.guardrail_generator = guardrail_generator or GuardrailGenerator()
         self.guardrail_format = guardrail_format
+        self.ai_client = ai_client
 
     def remediate_findings(
         self,
@@ -142,7 +147,7 @@ class RemediationOrchestrator:
             ``guardrail_config`` instance.
         """
         global_config: GuardrailConfig = self.guardrail_generator.generate(
-            findings, self.guardrail_format
+            findings, self.guardrail_format, ai_client=self.ai_client
         )
 
         results: list[RemediationResult] = []

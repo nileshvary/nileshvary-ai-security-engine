@@ -6,7 +6,7 @@ import json
 import tempfile
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -213,3 +213,33 @@ class TestSerialisation:
             saved = agent.save_results(results, tmp)
             assert saved.name == "remediation_results.json"
             assert saved.exists()
+
+
+# ---------------------------------------------------------------------------
+# Tests: Claude API integration
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeAPIIntegration:
+    def test_ai_client_passed_through_to_guardrail_generator(self):
+        mock_ai = MagicMock()
+        mock_ai.generate_complete_analysis.return_value = None
+        agent = RemediatorAgent(ai_client=mock_ai)
+        findings = _make_findings(1)
+        agent.remediate(findings)
+        mock_ai.generate_complete_analysis.assert_called_once()
+
+    def test_anthropic_api_key_constructs_remediaxai(self):
+        with patch("components.ai_client.RemediAXAI") as mock_cls:
+            mock_instance = MagicMock()
+            mock_instance.generate_complete_analysis.return_value = None
+            mock_cls.return_value = mock_instance
+            agent = RemediatorAgent(anthropic_api_key="sk-test-key")
+            mock_cls.assert_called_once_with(api_key="sk-test-key")
+            assert agent._ai_client is mock_instance
+
+    def test_no_ai_client_no_key_falls_back_to_deterministic(self):
+        agent = RemediatorAgent(ai_client=None, anthropic_api_key=None)
+        findings = _make_findings(2)
+        results = agent.remediate(findings)
+        assert len(results) == 2
