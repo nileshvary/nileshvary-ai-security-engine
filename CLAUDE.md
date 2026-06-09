@@ -166,6 +166,54 @@ The `remediation_engine` package contains three sub-modules:
 - Report warnings even if not errors
 - Never say "done" without showing proof
 
+## Document & PDF Rules
+
+When I ask to create any document, report,
+or PDF — always save it here:
+
+### Save Location
+All documents save to this folder:
+docs/
+├── reports/          ← security scan reports
+├── pdfs/             ← all PDF files
+├── architecture/     ← architecture diagrams
+├── research/         ← research documents
+└── exports/          ← any other exports
+
+### Auto-Create Folders
+If docs/ folder doesn't exist, create it.
+If subfolder doesn't exist, create it.
+Never ask where to save — always use docs/
+
+### File Naming Convention
+PDFs:     YYYY-MM-DD_description.pdf
+Reports:  YYYY-MM-DD_report_name.html
+Docs:     description.md
+
+### Examples
+docs/pdfs/2026-06-09_remediax_master_reference.pdf
+docs/reports/2026-06-09_mistral_scan_report.html
+docs/architecture/remediax_architecture.md
+
+### After Saving Always
+1. Tell me exact file path where saved
+2. Commit to GitHub automatically
+3. Show file size confirmation
+4. Author: Nileshwari Kadgale only
+5. No Co-Authored-By
+
+### Types of Documents I May Ask For
+- Security scan reports (HTML + PDF)
+- Architecture diagrams
+- Research summaries
+- Meeting notes
+- Project updates
+- README drafts
+- Resume updates
+- Article drafts
+- Benchmark reports
+- CVE research docs
+
 ## Commit Rules
 - Author: Nileshwari Kadgale
 - Email: nileshvary@gmail.com
