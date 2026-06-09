@@ -248,3 +248,6 @@ tokens.json
 .remediax_usage.json
 .streamlit/secrets.toml
 _remediax_runs/
+
+# Local project context — contains personal details and embargoed vuln data
+REMEDIAX_MASTER_CONTEXT.md
