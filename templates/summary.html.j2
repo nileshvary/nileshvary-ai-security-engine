@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RemediAX Security Report — {{ target or "AI System" }}</title>
+  <style>
+    :root {
+      --bg: #0d1117; --surface: #161b22; --border: #30363d;
+      --text: #c9d1d9; --muted: #8b949e; --accent: #58a6ff;
+      --red: #f85149; --orange: #f0883e; --yellow: #d29922;
+      --green: #3fb950; --blue: #58a6ff; --purple: #bc8cff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; line-height: 1.6; }
+    a { color: var(--accent); text-decoration: none; }
+    .container { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+
+    /* Header */
+    .report-header { border-bottom: 1px solid var(--border); padding-bottom: 24px; margin-bottom: 32px; }
+    .report-header h1 { font-size: 26px; font-weight: 700; color: #fff; margin-bottom: 4px; }
+    .report-header .meta { color: var(--muted); font-size: 13px; }
+    .badge-row { display: flex; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+    .badge { padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; border: 1px solid; }
+    .badge-critical { color: var(--red); border-color: var(--red); background: rgba(248,81,73,.12); }
+    .badge-high { color: var(--orange); border-color: var(--orange); background: rgba(240,136,62,.12); }
+    .badge-medium { color: var(--yellow); border-color: var(--yellow); background: rgba(210,153,34,.12); }
+    .badge-low { color: var(--green); border-color: var(--green); background: rgba(63,185,80,.12); }
+    .badge-info { color: var(--blue); border-color: var(--blue); background: rgba(88,166,255,.12); }
+
+    /* Executive summary */
+    .section { margin-bottom: 40px; }
+    .section h2 { font-size: 18px; font-weight: 600; color: #fff; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 16px; }
+    .exec-summary { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; color: var(--text); line-height: 1.7; }
+
+    /* Stats grid */
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 32px; }
+    .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; text-align: center; }
+    .stat-card .number { font-size: 32px; font-weight: 700; color: #fff; }
+    .stat-card .label { font-size: 12px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .5px; }
+
+    /* OWASP coverage table */
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    thead tr { border-bottom: 2px solid var(--border); }
+    th { padding: 8px 12px; text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+    tbody tr { border-bottom: 1px solid var(--border); }
+    tbody tr:hover { background: rgba(88,166,255,.05); }
+    td { padding: 10px 12px; }
+    .hit { color: var(--green); font-weight: 600; }
+    .miss { color: var(--muted); }
+
+    /* Strategy breakdown */
+    .strategy-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin: 12px 0; }
+    .seg-harden  { background: var(--blue); }
+    .seg-sanitize { background: var(--green); }
+    .seg-guardrail { background: var(--purple); }
+    .seg-log_only { background: var(--muted); }
+    .seg-block { background: var(--red); }
+    .strategy-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+
+    /* Finding cards */
+    .finding-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 16px; overflow: hidden; }
+    .finding-header { padding: 14px 16px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--border); cursor: pointer; }
+    .finding-header:hover { background: rgba(255,255,255,.03); }
+    .finding-number { color: var(--muted); font-size: 12px; min-width: 32px; }
+    .finding-title { flex: 1; font-weight: 600; color: #fff; font-size: 14px; }
+    .finding-body { padding: 16px; }
+    .finding-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+    .finding-section h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
+    .finding-section p { font-size: 13px; color: var(--text); line-height: 1.6; }
+    .code-block { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; color: var(--green); white-space: pre-wrap; word-break: break-all; margin-top: 4px; }
+    .attack-excerpt { background: var(--bg); border-left: 3px solid var(--red); border-radius: 0 6px 6px 0; padding: 10px 12px; font-size: 12px; color: var(--muted); font-style: italic; white-space: pre-wrap; word-break: break-all; margin-top: 4px; }
+    .notes-list { margin-top: 4px; padding-left: 18px; color: var(--muted); font-size: 12px; line-height: 1.8; }
+
+    /* Severity pill */
+    .sev { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
+    .sev-CRITICAL { background: rgba(248,81,73,.2); color: var(--red); }
+    .sev-HIGH     { background: rgba(240,136,62,.2); color: var(--orange); }
+    .sev-MEDIUM   { background: rgba(210,153,34,.2); color: var(--yellow); }
+    .sev-LOW      { background: rgba(63,185,80,.2); color: var(--green); }
+    .sev-UNKNOWN  { background: rgba(139,148,158,.2); color: var(--muted); }
+
+    /* Strategy pill */
+    .strat { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 10px; text-transform: uppercase; letter-spacing: .5px; }
+    .strat-harden   { background: rgba(88,166,255,.15); color: var(--blue); }
+    .strat-sanitize { background: rgba(63,185,80,.15); color: var(--green); }
+    .strat-guardrail{ background: rgba(188,140,255,.15); color: var(--purple); }
+    .strat-log_only { background: rgba(139,148,158,.15); color: var(--muted); }
+    .strat-block    { background: rgba(248,81,73,.15); color: var(--red); }
+
+    /* Footer */
+    .report-footer { border-top: 1px solid var(--border); padding-top: 20px; margin-top: 40px; color: var(--muted); font-size: 12px; text-align: center; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <!-- ── Header ───────────────────────────────────────────────────── -->
+  <div class="report-header">
+    <h1>RemediAX Security Report</h1>
+    <div class="meta">
+      Target: <strong>{{ target or "AI System" }}</strong> &nbsp;·&nbsp;
+      Generated: {{ generated_at }} &nbsp;·&nbsp;
+      Findings: {{ findings|length }} &nbsp;·&nbsp;
+      Pipeline: Agent 1 → Agent 2 → Agent 3
+    </div>
+    <div class="badge-row">
+      {% if severity_counts.CRITICAL %}
+        <span class="badge badge-critical">{{ severity_counts.CRITICAL }} CRITICAL</span>
+      {% endif %}
+      {% if severity_counts.HIGH %}
+        <span class="badge badge-high">{{ severity_counts.HIGH }} HIGH</span>
+      {% endif %}
+      {% if severity_counts.MEDIUM %}
+        <span class="badge badge-medium">{{ severity_counts.MEDIUM }} MEDIUM</span>
+      {% endif %}
+      {% if severity_counts.LOW %}
+        <span class="badge badge-low">{{ severity_counts.LOW }} LOW</span>
+      {% endif %}
+      <span class="badge badge-info">{{ owasp_coverage }} / 10 OWASP categories</span>
+    </div>
+  </div>
+
+  <!-- ── Stats Grid ────────────────────────────────────────────────── -->
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="number">{{ findings|length }}</div>
+      <div class="label">Total Findings</div>
+    </div>
+    <div class="stat-card">
+      <div class="number" style="color:var(--red)">{{ severity_counts.CRITICAL + severity_counts.HIGH }}</div>
+      <div class="label">Critical + High</div>
+    </div>
+    <div class="stat-card">
+      <div class="number" style="color:var(--green)">{{ remediated_count }}</div>
+      <div class="label">Remediated</div>
+    </div>
+    <div class="stat-card">
+      <div class="number" style="color:var(--blue)">{{ owasp_coverage }}</div>
+      <div class="label">OWASP Categories</div>
+    </div>
+  </div>
+
+  <!-- ── Executive Summary ─────────────────────────────────────────── -->
+  <div class="section">
+    <h2>Executive Summary</h2>
+    <div class="exec-summary">{{ exec_summary }}</div>
+  </div>
+
+  <!-- ── OWASP Coverage ────────────────────────────────────────────── -->
+  <div class="section">
+    <h2>OWASP LLM Top 10 Coverage</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Code</th>
+          <th>Category</th>
+          <th>Findings</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in owasp_rows %}
+        <tr>
+          <td><code>{{ row.code }}</code></td>
+          <td>{{ row.name }}</td>
+          <td>{% if row.count %}<strong>{{ row.count }}</strong>{% else %}—{% endif %}</td>
+          <td>{% if row.count %}<span class="hit">✔ Found</span>{% else %}<span class="miss">Not triggered</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ── Strategy Breakdown ────────────────────────────────────────── -->
+  <div class="section">
+    <h2>Remediation Strategy Breakdown</h2>
+    {% set total = results|length %}
+    {% if total > 0 %}
+    <div class="strategy-bar">
+      {% for strat, count in strategy_counts.items() %}
+        {% if count > 0 %}
+        <div class="seg-{{ strat }}" style="flex: {{ count }};" title="{{ strat }}: {{ count }}"></div>
+        {% endif %}
+      {% endfor %}
+    </div>
+    <div class="strategy-legend">
+      {% for strat, count in strategy_counts.items() %}
+        {% if count > 0 %}
+        <span><span class="dot" style="background:var(--{% if strat == 'harden' %}blue{% elif strat == 'sanitize' %}green{% elif strat == 'guardrail' %}purple{% elif strat == 'log_only' %}muted{% else %}red{% endif %})"></span>{{ strat }}: {{ count }}</span>
+        {% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- ── Findings ──────────────────────────────────────────────────── -->
+  <div class="section">
+    <h2>Findings Detail ({{ findings|length }})</h2>
+    {% for item in finding_items %}
+    <div class="finding-card">
+      <div class="finding-header">
+        <span class="finding-number">#{{ loop.index }}</span>
+        <span class="finding-title">{{ item.finding.probe_name }}</span>
+        <span class="sev sev-{{ item.finding.severity }}">{{ item.finding.severity }}</span>
+        <span class="strat strat-{{ item.strategy_str }}">{{ item.strategy_str }}</span>
+        <span class="badge badge-info" style="font-size:11px">{{ item.finding.owasp_llm_category }}</span>
+      </div>
+      <div class="finding-body">
+        <div class="finding-row">
+          <div class="finding-section">
+            <h4>Attack Prompt</h4>
+            <div class="attack-excerpt">{{ item.finding.attack_prompt[:300] }}{% if item.finding.attack_prompt|length > 300 %}…{% endif %}</div>
+          </div>
+          <div class="finding-section">
+            <h4>Model Response</h4>
+            <div class="attack-excerpt" style="border-left-color:var(--orange)">{{ item.finding.model_response[:300] }}{% if item.finding.model_response|length > 300 %}…{% endif %}</div>
+          </div>
+        </div>
+        <div class="finding-row">
+          <div class="finding-section">
+            <h4>Why Dangerous</h4>
+            <p>{{ item.danger_text }}</p>
+          </div>
+          <div class="finding-section">
+            <h4>Fix Applied</h4>
+            <p>{{ item.fix_text }}</p>
+          </div>
+        </div>
+        {% if item.guardrail_snippet %}
+        <div class="finding-section">
+          <h4>Guardrail (excerpt)</h4>
+          <div class="code-block">{{ item.guardrail_snippet }}</div>
+        </div>
+        {% endif %}
+        {% if item.result.notes %}
+        <div class="finding-section" style="margin-top:12px">
+          <h4>Implementation Notes</h4>
+          <ul class="notes-list">
+            {% for note in item.result.notes %}
+            <li>{{ note }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- ── Footer ────────────────────────────────────────────────────── -->
+  <div class="report-footer">
+    Generated by <strong>RemediAX</strong> — Open-source AI Security Platform &nbsp;·&nbsp;
+    <a href="https://github.com/nileshvary/nileshvary-ai-security-engine">github.com/nileshvary/nileshvary-ai-security-engine</a>
+  </div>
+
+</div>
+</body>
+</html>
