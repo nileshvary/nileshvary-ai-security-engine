@@ -1,3 +1,111 @@
+# RemediAX — AI Security Platform
+
+## Project Context
+
+RemediAX is a real open-source AI security
+product built for production use. Anyone
+building AI applications can use it to find,
+fix, and verify LLM vulnerabilities automatically.
+
+## What This Tool Does For Real Users
+
+Any developer or security team can:
+- Scan their AI application for vulnerabilities
+- Get auto-generated guardrails to fix them
+- Verify fixes actually work via CI pipeline
+- Stay current with new CVEs automatically
+- Get professional security reports
+- Run it free — no API key needed for basics
+
+## Who Uses RemediAX
+
+1. AI/ML Engineers
+   Building LLM apps who need to know
+   if their app is vulnerable before shipping
+
+2. Security Engineers
+   Running LLM security audits on
+   AI products for their company
+
+3. Bug Bounty Researchers
+   Finding vulnerabilities in AI systems
+   like Mistral, OpenAI, Anthropic
+
+4. DevSecOps Teams
+   Adding AI security gates to CI/CD pipelines
+   so every code change is security tested
+
+5. Startups Building AI Products
+   Who cannot afford commercial tools like
+   Prisma AIRS ($$$) but need real security
+
+6. Enterprise Security Teams
+   Who want open-source auditable alternative
+   to closed commercial AI security tools
+
+## Why RemediAX Exists
+
+Commercial tools (Prisma AIRS, Mindgard,
+Lakera) are expensive and closed source.
+Open source tools (Garak, PyRIT, Promptfoo)
+each do one thing only.
+
+RemediAX is the only free open-source tool
+that does ALL of this in one pipeline:
+Scan → Remediate → Verify → Report → Update
+
+## Product Goals
+
+1. PRODUCTIVITY
+   One command replaces weeks of manual
+   security testing work
+
+2. ACCESSIBILITY
+   Free forever — no vendor lock-in
+   No expensive enterprise contracts
+
+3. COMPLETENESS
+   20 categories covered (OWASP LLM + ASI)
+   More than any commercial tool
+
+4. AUTOMATION
+   CVE auto-update means zero maintenance
+   Always current with latest threats
+
+5. PROOF
+   Before/after benchmark shows exactly
+   how much safer your app is after fixes
+
+## Real World Impact
+
+Already proven on real target:
+- Found 6 LLM07 vulnerabilities in Mistral AI
+- Reported via HackerOne #3781259
+- Tool works on real production AI systems
+- Not just a demo — real security research
+
+## How I Work With Claude Code
+
+- I review every plan before approving
+- Explain what you built and why
+- Show output clearly after every task
+- Ask before assuming anything
+- Keep code production-grade quality
+- Every feature must work for real users
+  not just pass tests
+
+## Definition of Done
+
+A feature is DONE only when:
+- Real user can use it without confusion
+- Tests pass (680+)
+- Documentation updated
+- No existing features broken
+- Committed and deployed to
+  remediax.streamlit.app
+
+---
+
 # ai-security-engine
 
 ## Architecture
