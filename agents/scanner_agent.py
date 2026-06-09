@@ -22,22 +22,26 @@ logger = logging.getLogger(__name__)
 
 
 class ScannerAgent:
-    """Coordinate Garak and PyRIT scanners and emit normalized Finding objects.
+    """Coordinate Garak, PyRIT, and VectorPoisoner scanners and emit normalized Finding objects.
 
     Args:
         garak_runner: An optional GarakRunner instance. If provided,
                       ``scan()`` will include Garak findings.
         pyrit_runner: An optional PyRITRunner instance. If provided,
                       ``scan()`` will include PyRIT multi-turn findings.
+        vector_poisoner: An optional VectorPoisoner instance. If provided,
+                         ``scan()`` will include LLM08 vector embedding findings.
     """
 
     def __init__(
         self,
         garak_runner: Any | None = None,
         pyrit_runner: Any | None = None,
+        vector_poisoner: Any | None = None,
     ) -> None:
         self._garak = garak_runner
         self._pyrit = pyrit_runner
+        self._vector = vector_poisoner
 
     # ------------------------------------------------------------------ #
     #  Public API                                                          #
@@ -48,6 +52,7 @@ class ScannerAgent:
         garak_probes: list[str] | None = None,
         pyrit_probes: list[dict[str, str]] | None = None,
         pyrit_max_turns: int = 5,
+        vector_attacks: list[dict] | None = None,
     ) -> list[Finding]:
         """Run all enabled scanners and return a unified finding list.
 
@@ -57,6 +62,8 @@ class ScannerAgent:
             pyrit_probes: PyRIT probe definitions. ``None`` uses
                           ``tools.pyrit_runner.DEFAULT_PROBES``.
             pyrit_max_turns: Max conversation turns per PyRIT probe.
+            vector_attacks: VectorPoisoner attack definitions. ``None`` uses
+                            ``tools.vector_poisoner.DEFAULT_ATTACKS``.
 
         Returns:
             List of ``Finding`` objects from all active scanners, deduped by
@@ -69,6 +76,9 @@ class ScannerAgent:
 
         if self._pyrit is not None:
             findings.extend(self._run_pyrit(pyrit_probes, pyrit_max_turns))
+
+        if self._vector is not None:
+            findings.extend(self._run_vector_poisoner(vector_attacks))
 
         return self._deduplicate(findings)
 
@@ -204,6 +214,35 @@ class ScannerAgent:
             owasp_agentic_categories=merged,
             severity="MEDIUM",
             source="pyrit",
+            raw_data=raw,
+        )
+
+    def _run_vector_poisoner(
+        self,
+        attacks: list[dict] | None,
+    ) -> list[Finding]:
+        """Run VectorPoisoner and convert raw dicts to Finding objects."""
+        try:
+            raw_results = self._vector.run_scan(attacks=attacks)
+        except Exception as exc:
+            logger.error("VectorPoisoner scan failed: %s", exc)
+            return []
+
+        return [self._vector_dict_to_finding(r) for r in raw_results]
+
+    @staticmethod
+    def _vector_dict_to_finding(raw: dict) -> Finding:
+        """Convert a VectorPoisoner result dict to a schemas Finding."""
+        return Finding(
+            probe_name=raw["probe_name"],
+            detector_name="vector.RetrievalRankDetector",
+            attack_prompt=raw["attack_prompt"],
+            model_response=raw["model_response"],
+            is_successful_attack=raw.get("is_successful_attack", False),
+            owasp_llm_category=raw.get("owasp", "LLM08"),
+            owasp_agentic_categories=list(raw.get("agentic", ["ASI06"])),
+            severity="HIGH",
+            source="vector",
             raw_data=raw,
         )
 

@@ -170,6 +170,77 @@ class TestScannerAgentBoth:
         assert len(findings) == 1
 
 
+class _MockVectorPoisoner:
+    """Stub VectorPoisoner that returns fixed raw dicts."""
+
+    def __init__(self, results: list[dict[str, Any]]) -> None:
+        self._results = results
+
+    def run_scan(
+        self,
+        attacks: Any = None,
+    ) -> list[dict[str, Any]]:
+        return self._results
+
+
+class TestScannerAgentVector:
+    def _make_vector_result(
+        self, probe_name: str = "vector.DirectInstructionInjection"
+    ) -> dict[str, Any]:
+        return {
+            "probe_name": probe_name,
+            "owasp": "LLM08",
+            "agentic": ["ASI06"],
+            "attack_prompt": "Poisoned doc with hidden instruction",
+            "model_response": "Retrieved context containing poison",
+            "is_successful_attack": True,
+            "source": "vector",
+        }
+
+    def test_vector_poisoner_findings_included_in_scan(self) -> None:
+        result = self._make_vector_result()
+        agent = ScannerAgent(vector_poisoner=_MockVectorPoisoner([result]))
+        findings = agent.scan()
+        assert len(findings) == 1
+        f = findings[0]
+        assert isinstance(f, Finding)
+        assert f.probe_name == "vector.DirectInstructionInjection"
+        assert f.source == "vector"
+        assert f.owasp_llm_category == "LLM08"
+        assert "ASI06" in f.owasp_agentic_categories
+        assert f.is_successful_attack is True
+
+    def test_vector_poisoner_none_returns_empty(self) -> None:
+        agent = ScannerAgent(vector_poisoner=None)
+        findings = agent.scan()
+        assert findings == []
+
+    def test_all_three_scanners_combined(self) -> None:
+        garak_finding = _MockBridgeFinding(
+            probe_name="dan.DAN", attack_prompt="garak_prompt"
+        )
+        pyrit_result = {
+            "probe_name": "crescendo.Injection",
+            "owasp": "LLM01",
+            "attack_prompt": "pyrit_prompt",
+            "model_response": "",
+            "is_successful_attack": False,
+            "source": "pyrit",
+        }
+        vector_result = self._make_vector_result()
+        agent = ScannerAgent(
+            garak_runner=_MockGarakRunner([garak_finding]),
+            pyrit_runner=_MockPyRITRunner([pyrit_result]),
+            vector_poisoner=_MockVectorPoisoner([vector_result]),
+        )
+        findings = agent.scan()
+        assert len(findings) == 3
+        sources = {f.source for f in findings}
+        assert sources == {"garak", "pyrit", "vector"}
+        llm_cats = {f.owasp_llm_category for f in findings}
+        assert "LLM08" in llm_cats
+
+
 class TestScannerAgentPersistence:
     def test_save_findings_writes_json(self, tmp_path: Path) -> None:
         garak_finding = _MockBridgeFinding()
