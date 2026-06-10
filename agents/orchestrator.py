@@ -35,6 +35,7 @@ import json
 import logging
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -207,8 +208,9 @@ class OrchestratorAgent:
 
         # Artifact persistence
         artifacts: dict[str, str] = {}
+        db_run_dir: Path | None = None
         if save_artifacts:
-            artifacts = self._save_all(findings, results, html, report)
+            artifacts, db_run_dir = self._save_all(findings, results, html, report)
 
         pipeline_result = PipelineResult(
             target=target,
@@ -224,6 +226,16 @@ class OrchestratorAgent:
             ci_passed=self._verifier.ci_passed(report),
             artifacts=artifacts,
         )
+
+        # Save pipeline summary to both latest artifacts/ and permanent record
+        if save_artifacts:
+            self.save_pipeline_result(pipeline_result, self._artifacts_dir)
+            if db_run_dir is not None:
+                self.save_pipeline_result(pipeline_result, db_run_dir)
+                logger.info(
+                    "OrchestratorAgent: run saved to database_reports/scans/%s",
+                    db_run_dir.name,
+                )
 
         logger.info(
             "OrchestratorAgent: pipeline complete — "
@@ -297,8 +309,16 @@ class OrchestratorAgent:
         results: list[Any],
         html: str,
         report: Any,
-    ) -> dict[str, str]:
-        """Save all four artifact files; return label → path mapping."""
+    ) -> tuple[dict[str, str], Path]:
+        """Save artifact files to artifacts/ (latest) and database_reports/ (permanent).
+
+        Returns:
+            Tuple of (artifacts dict, db_run_dir Path).
+            artifacts maps label → path string for the latest artifacts/ copies.
+            db_run_dir is the timestamped folder under database_reports/scans/
+            where this run's permanent copy was saved.
+        """
+        # Latest run — overwrites previous (fast access to most recent result)
         self._artifacts_dir.mkdir(parents=True, exist_ok=True)
 
         artifacts: dict[str, str] = {}
@@ -315,7 +335,19 @@ class OrchestratorAgent:
         p = self._verifier.save_report(report, self._artifacts_dir)
         artifacts["benchmark"] = str(p)
 
-        return artifacts
+        # Permanent record — one timestamped subfolder per run, never overwritten
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        db_run_dir = _ROOT / "database_reports" / "scans" / timestamp
+        db_run_dir.mkdir(parents=True, exist_ok=True)
+
+        self._scanner.save_findings(findings, db_run_dir)
+        self._remediator.save_results(results, db_run_dir)
+        self._reporter.save_report(html, db_run_dir)
+        self._verifier.save_report(report, db_run_dir)
+
+        artifacts["db_run_dir"] = str(db_run_dir)
+
+        return artifacts, db_run_dir
 
 
 # ---------------------------------------------------------------------------

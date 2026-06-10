@@ -316,7 +316,9 @@ class CveWatcherAgent:
 
         artifacts: dict[str, str] = {}
         if new_cves:
-            db_path = self.save_cve_database(new_cves, self._artifacts_dir)
+            db_path = self.save_cve_database(
+                new_cves, _ROOT / "database_reports"
+            )
             artifacts["cve_database"] = str(db_path)
 
         rescan_findings: list[Any] = []
