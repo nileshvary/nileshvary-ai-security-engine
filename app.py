@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import html as _html
+import json
 import logging
 import os
 import shutil
@@ -94,6 +95,22 @@ from database import (
 )
 from demo_data import load_demo_findings
 
+# v2.0 pipeline agents — graceful fallback when not yet installed
+_AGENTS_ROOT = Path(__file__).parent
+if str(_AGENTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_AGENTS_ROOT))
+try:
+    from agents.orchestrator import OrchestratorAgent
+    from agents.cve_watcher import CveWatcherAgent, TargetConfig
+    _PIPELINE_V2_AVAILABLE = True
+except ImportError:
+    _PIPELINE_V2_AVAILABLE = False
+
+from components.pipeline_diagram import (
+    render_pipeline_diagram,
+    render_agent_nav_buttons,
+)
+
 from integration_bridge import Finding, GarakParser
 from output import OutputOrchestrator
 from remediation_engine import (
@@ -122,6 +139,7 @@ _RESTORABLE_SCREENS: frozenset[str] = frozenset(
         "complete",
         "results",
         "admin",
+        "pipeline_v2",
     }
 )
 
@@ -1552,6 +1570,15 @@ def render_sidebar() -> None:
             st.session_state.screen = "analytics"
             st.rerun()
 
+        if st.button(
+            "🔄 Full Pipeline v2",
+            use_container_width=True,
+            key="nav-pipeline-v2",
+            help="Run the full 6-agent pipeline: Scanner → Remediator → Reporter → Verifier.",
+        ):
+            st.session_state.screen = "pipeline_v2"
+            st.rerun()
+
         st.divider()
         st.markdown("**AI mode**")
         if not _has_premium():
@@ -1703,6 +1730,25 @@ def render_sidebar() -> None:
                     st.caption("No scans yet.")
             else:
                 st.caption("Scan history is available for Firebase-authenticated users.")
+
+        # CVE Tracker badge — reads database_reports/cve_database.json
+        _cve_db = Path("database_reports/cve_database.json")
+        if _cve_db.exists():
+            try:
+                _cves = json.loads(_cve_db.read_text(encoding="utf-8"))
+                st.divider()
+                st.markdown("**🛡️ CVE Tracker**")
+                st.metric("CVEs tracked", len(_cves))
+                if st.button(
+                    "🔄 Fetch new CVEs",
+                    key="sidebar-fetch-cves",
+                    use_container_width=True,
+                    help="Pull latest LLM CVEs from NVD API (NIST)",
+                ):
+                    st.session_state.screen = "pipeline_v2"
+                    st.rerun()
+            except Exception:
+                pass
 
         st.divider()
         st.markdown("**Access**")
@@ -4272,6 +4318,209 @@ def render_analytics() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Full Pipeline v2.0 screen
+# ---------------------------------------------------------------------------
+
+
+def render_pipeline_v2() -> None:
+    """Render the v2.0 full pipeline screen powered by OrchestratorAgent."""
+    st.markdown(
+        '<div class="remediax-hero">'
+        "<h1>🔄 Full Pipeline Scan v2.0</h1>"
+        '<div class="tagline">'
+        "Scanner → Remediator → Reporter → Verifier → CVE Watcher"
+        "</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    # Interactive architecture diagram
+    render_pipeline_diagram()
+    render_agent_nav_buttons()
+
+    if not _PIPELINE_V2_AVAILABLE:
+        st.warning(
+            "Pipeline v2.0 agents are not available in this deployment. "
+            "Ensure `agents/` is on the Python path."
+        )
+        return
+
+    st.divider()
+
+    # ── Run Pipeline ────────────────────────────────────────────────────────
+    st.markdown("### ▶ Run Full Pipeline")
+    col_tgt, col_key = st.columns([2, 1])
+    with col_tgt:
+        target = st.text_input(
+            "Target",
+            placeholder="openai:gpt-4o   or   https://my-app.com/chat",
+            help="Format: provider:model  (e.g. openai:gpt-4o, anthropic:claude-opus-4-8)  "
+                 "or a full HTTPS endpoint URL",
+            key="pv2-target",
+        )
+    with col_key:
+        api_key_input = st.text_input(
+            "API Key",
+            type="password",
+            help="Your OpenAI / Anthropic / Mistral key. Never stored — used for this run only.",
+            key="pv2-api-key",
+        )
+    system_prompt = st.text_area(
+        "System Prompt (optional)",
+        placeholder="You are a helpful AI assistant...",
+        key="pv2-system-prompt",
+        height=72,
+    )
+
+    run_clicked = st.button(
+        "▶ Run Full Pipeline",
+        type="primary",
+        use_container_width=True,
+        key="pv2-run",
+        disabled=not bool(target),
+    )
+
+    if run_clicked and target:
+        # Temporarily set API key in environment for this run
+        if api_key_input.strip():
+            try:
+                tc = TargetConfig.from_string(target)
+                if tc.api_key_env:
+                    os.environ[tc.api_key_env] = api_key_input.strip()
+            except Exception:
+                pass
+
+        progress = st.progress(0, text="Stage 1/4 — Scanner running…")
+        try:
+            agent = OrchestratorAgent()
+            with st.spinner("Running pipeline: Scanner → Remediator → Reporter → Verifier…"):
+                progress.progress(10, text="Stage 1/4 — Scanner (Garak + PyRIT)…")
+                result = agent.run(target, system_prompt=system_prompt.strip())
+                progress.progress(100, text="Pipeline complete ✅")
+
+            st.session_state["pv2_last_result"] = {
+                "target": result.target,
+                "finding_count": result.finding_count,
+                "remediation_count": result.remediation_count,
+                "verified_count": result.verified_count,
+                "partial_count": result.partial_count,
+                "failed_count": result.failed_count,
+                "unverifiable_count": result.unverifiable_count,
+                "overall_improvement_percent": result.overall_improvement_percent,
+                "ci_passed": result.ci_passed,
+                "artifacts": result.artifacts,
+            }
+            st.rerun()
+        except Exception as exc:
+            progress.empty()
+            st.error(f"Pipeline error: {exc}")
+
+    # ── Last result ─────────────────────────────────────────────────────────
+    last = st.session_state.get("pv2_last_result")
+    if last:
+        st.divider()
+        ci_badge = "✅ PASS" if last["ci_passed"] else "❌ FAIL"
+        st.markdown(f"### Results — `{last['target']}`")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Findings", last["finding_count"])
+        c2.metric("Verified Fixed", last["verified_count"])
+        c3.metric("Partial", last["partial_count"])
+        c4.metric("Improvement", f"{last['overall_improvement_percent']:.1f}%")
+        c5.metric("CI Gate", ci_badge)
+
+        arts = last.get("artifacts", {})
+        if arts:
+            with st.expander("📦 Artifacts saved", expanded=False):
+                for label, path in arts.items():
+                    if label == "db_run_dir":
+                        st.caption(f"🗂️ **Permanent record** → `{path}`")
+                    else:
+                        st.caption(f"`{label}` → `{path}`")
+
+    # ── Scan History ────────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("### 🗂️ Scan History")
+    scans_dir = Path("database_reports/scans")
+    if scans_dir.exists():
+        runs = sorted(
+            [p for p in scans_dir.iterdir() if p.is_dir()],
+            reverse=True,
+        )[:10]
+        if runs:
+            for run in runs:
+                summary_file = run / "pipeline_summary.json"
+                if summary_file.exists():
+                    try:
+                        data = json.loads(summary_file.read_text(encoding="utf-8"))
+                        ci = "✅" if data.get("ci_passed") else "❌"
+                        imp = data.get("overall_improvement_percent", 0.0)
+                        fc = data.get("finding_count", 0)
+                        tgt = data.get("target", "?")
+                        st.caption(
+                            f"`{run.name}` &nbsp; **{tgt}** &nbsp;·&nbsp; "
+                            f"{fc} finding(s) &nbsp;·&nbsp; "
+                            f"{imp:.1f}% improvement &nbsp;·&nbsp; CI {ci}"
+                        )
+                    except Exception:
+                        st.caption(f"`{run.name}`")
+        else:
+            st.caption("No pipeline runs yet — run your first scan above.")
+    else:
+        st.caption("No scan history yet.")
+
+    # ── CVE Database ────────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("### 🛡️ CVE Database — NVD Auto-Update Engine")
+    cve_db_path = Path("database_reports/cve_database.json")
+    if cve_db_path.exists():
+        try:
+            cves = json.loads(cve_db_path.read_text(encoding="utf-8"))
+            total = len(cves)
+            critical = sum(1 for c in cves if c.get("severity") == "CRITICAL")
+            high = sum(1 for c in cves if c.get("severity") == "HIGH")
+
+            mc1, mc2, mc3 = st.columns(3)
+            mc1.metric("Total CVEs Tracked", total)
+            mc2.metric("Critical", critical)
+            mc3.metric("High", high)
+
+            latest = sorted(
+                cves, key=lambda x: x.get("published_date", ""), reverse=True
+            )[:5]
+            if latest:
+                st.markdown("**Latest CVEs:**")
+                for cve in latest:
+                    sev = cve.get("severity", "UNKNOWN")
+                    badge = "🔴" if sev == "CRITICAL" else "🟠" if sev == "HIGH" else "🟡"
+                    desc = cve.get("description", "")[:90]
+                    st.caption(
+                        f"{badge} **{cve['cve_id']}** &nbsp;·&nbsp; "
+                        f"`{cve.get('owasp_category', '?')}` &nbsp;·&nbsp; {desc}…"
+                    )
+        except Exception:
+            st.caption("CVE database available.")
+
+    if st.button(
+        "🔄 Fetch Latest CVEs from NVD (NIST)",
+        key="pv2-fetch-cves",
+        use_container_width=False,
+    ):
+        with st.spinner("Connecting to NVD API…"):
+            try:
+                watcher = CveWatcherAgent()
+                watch_result = watcher.watch_and_rescan(days_back=7)
+                if watch_result.new_cve_count:
+                    st.success(
+                        f"✅ {watch_result.new_cve_count} new CVE(s) fetched, "
+                        f"{watch_result.new_probe_count} probe(s) generated."
+                    )
+                else:
+                    st.info("No new LLM/AI CVEs published in the last 7 days.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"NVD fetch error: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # Top-level dispatch
 # ---------------------------------------------------------------------------
 
@@ -4350,6 +4599,8 @@ def main() -> None:
         render_analytics()
     elif screen == "admin":
         render_admin_panel()
+    elif screen == "pipeline_v2":
+        render_pipeline_v2()
     else:  # pragma: no cover - defensive
         st.session_state.screen = "landing"
         st.rerun()
