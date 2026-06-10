@@ -19,6 +19,8 @@ for _p in (str(_ROOT), str(_SRC)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from datetime import datetime, timezone
+
 from agents.cve_watcher import (
     CveEntry,
     CveWatcherAgent,
@@ -42,12 +44,19 @@ def _make_nvd_response(vulnerabilities: list[dict] | None = None) -> MagicMock:
     return resp
 
 
+def _today_iso() -> str:
+    """Return today's UTC datetime as an NVD-format string."""
+    return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000")
+
+
 def _nvd_vuln(
     cve_id: str = "CVE-2024-12345",
     description: str = "A prompt injection vulnerability in an LLM chatbot.",
     cvss_score: float = 7.5,
-    published: str = "2024-09-10T00:00:00.000",
+    published: str | None = None,
 ) -> dict:
+    if published is None:
+        published = _today_iso()
     """Build a single NVD vulnerability dict."""
     return {
         "cve": {

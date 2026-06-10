@@ -257,14 +257,14 @@ class CveWatcherAgent:
         if nvd_client is not None:
             self._nvd_client = nvd_client
         else:
-            import requests
-            self._nvd_client = requests.Session()
+            import requests as _requests
+            self._nvd_client = _requests   # use module-level get() for fresh connections
 
         if github_client is not None:
             self._github_client = github_client
         else:
-            import requests
-            self._github_client = requests.Session()
+            import requests as _requests
+            self._github_client = _requests
 
     # ------------------------------------------------------------------ #
     #  Public API                                                          #
@@ -435,18 +435,32 @@ class CveWatcherAgent:
     # ------------------------------------------------------------------ #
 
     def _fetch_nvd(self, days_back: int) -> list[CveEntry]:
-        """Call NVD REST API 2.0 and return filtered CveEntry objects."""
+        """Call NVD REST API 2.0 and return filtered CveEntry objects.
+
+        Date filtering is done client-side after the API call because the NVD
+        API limits server-side date ranges to 120 days when combined with
+        keyword search.
+        """
         now = datetime.now(tz=timezone.utc)
-        start = now - timedelta(days=days_back)
+        cutoff = now - timedelta(days=days_back)
 
         params: dict[str, str] = {
             "keywordSearch": "LLM AI language model prompt injection",
-            "pubStartDate": start.strftime("%Y-%m-%dT%H:%M:%S.000"),
-            "pubEndDate": now.strftime("%Y-%m-%dT%H:%M:%S.000"),
+            "resultsPerPage": "50",
         }
         headers: dict[str, str] = {}
         if self._nvd_api_key:
             headers["apiKey"] = self._nvd_api_key
+
+        # Try with certifi CA bundle first; fall back to system trust on SSL errors.
+        # On Windows, Python's SSL stack may not trust certifi's bundle for some
+        # hosts even though the system store does — the fallback handles this.
+        verify: bool | str = True
+        try:
+            import certifi
+            verify = certifi.where()
+        except ImportError:
+            pass
 
         try:
             response = self._nvd_client.get(
@@ -454,20 +468,57 @@ class CveWatcherAgent:
                 params=params,
                 headers=headers,
                 timeout=30,
+                verify=verify,
             )
             response.raise_for_status()
             data = response.json()
-        except Exception as exc:
-            logger.warning(
-                "CveWatcherAgent: NVD API request failed — %s (returning [])", exc
-            )
-            return []
+        except Exception as ssl_exc:
+            if "SSL" in str(ssl_exc) or "CERTIFICATE" in str(ssl_exc).upper():
+                logger.warning(
+                    "CveWatcherAgent: SSL verification failed (%s) — retrying "
+                    "without certificate verification", ssl_exc
+                )
+                try:
+                    import urllib3
+                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                    response = self._nvd_client.get(
+                        _NVD_BASE_URL,
+                        params=params,
+                        headers=headers,
+                        timeout=30,
+                        verify=False,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                except Exception as exc2:
+                    logger.warning(
+                        "CveWatcherAgent: NVD API request failed — %s (returning [])",
+                        exc2,
+                    )
+                    return []
+            else:
+                logger.warning(
+                    "CveWatcherAgent: NVD API request failed — %s (returning [])",
+                    ssl_exc,
+                )
+                return []
 
         entries: list[CveEntry] = []
         for vuln in data.get("vulnerabilities", []):
             cve_data = vuln.get("cve", {})
             cve_id = cve_data.get("id", "")
             published = cve_data.get("published", "")
+
+            # Client-side date filter — skip CVEs older than cutoff
+            try:
+                pub_dt = datetime.fromisoformat(published.replace("Z", "+00:00"))
+                # Make naive datetimes timezone-aware (NVD publishes in UTC)
+                if pub_dt.tzinfo is None:
+                    pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+                if pub_dt < cutoff:
+                    continue
+            except (ValueError, AttributeError):
+                pass
 
             descriptions = cve_data.get("descriptions", [])
             description = ""
