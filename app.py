@@ -95,29 +95,6 @@ from database import (
 )
 from demo_data import load_demo_findings
 
-# v2.0 pipeline agents — graceful fallback when not yet installed
-_AGENTS_ROOT = Path(__file__).parent
-if str(_AGENTS_ROOT) not in sys.path:
-    sys.path.insert(0, str(_AGENTS_ROOT))
-try:
-    from agents.orchestrator import OrchestratorAgent
-    from agents.cve_watcher import CveWatcherAgent, TargetConfig
-    _PIPELINE_V2_AVAILABLE = True
-except ImportError:
-    _PIPELINE_V2_AVAILABLE = False
-
-try:
-    from components.pipeline_diagram import (
-        render_pipeline_diagram,
-        render_agent_nav_buttons,
-    )
-    _DIAGRAM_AVAILABLE = True
-except Exception:
-    _DIAGRAM_AVAILABLE = False
-    def render_pipeline_diagram() -> None:  # type: ignore[misc]
-        pass
-    def render_agent_nav_buttons() -> None:  # type: ignore[misc]
-        pass
 
 from integration_bridge import Finding, GarakParser
 from output import OutputOrchestrator
@@ -4332,6 +4309,29 @@ def render_analytics() -> None:
 
 def render_pipeline_v2() -> None:
     """Render the v2.0 full pipeline screen powered by OrchestratorAgent."""
+    # Lazy imports — agents/ is not installed on Streamlit Cloud,
+    # so everything that references agents must be imported here, not at
+    # module level (a module-level ImportError would crash the whole app).
+    _proj_root = str(Path(__file__).parent)
+    if _proj_root not in sys.path:
+        sys.path.insert(0, _proj_root)
+
+    try:
+        from agents.orchestrator import OrchestratorAgent  # noqa: F811
+        from agents.cve_watcher import CveWatcherAgent, TargetConfig  # noqa: F811
+        _pipeline_v2_available = True
+    except Exception:
+        _pipeline_v2_available = False
+
+    try:
+        from components.pipeline_diagram import (  # noqa: F811
+            render_pipeline_diagram,
+            render_agent_nav_buttons,
+        )
+    except Exception:
+        def render_pipeline_diagram() -> None: pass
+        def render_agent_nav_buttons() -> None: pass
+
     st.markdown(
         '<div class="remediax-hero">'
         "<h1>🔄 Full Pipeline Scan v2.0</h1>"
@@ -4345,7 +4345,7 @@ def render_pipeline_v2() -> None:
     render_pipeline_diagram()
     render_agent_nav_buttons()
 
-    if not _PIPELINE_V2_AVAILABLE:
+    if not _pipeline_v2_available:
         st.warning(
             "Pipeline v2.0 agents are not available in this deployment. "
             "Ensure `agents/` is on the Python path."
