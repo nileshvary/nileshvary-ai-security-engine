@@ -106,10 +106,18 @@ try:
 except ImportError:
     _PIPELINE_V2_AVAILABLE = False
 
-from components.pipeline_diagram import (
-    render_pipeline_diagram,
-    render_agent_nav_buttons,
-)
+try:
+    from components.pipeline_diagram import (
+        render_pipeline_diagram,
+        render_agent_nav_buttons,
+    )
+    _DIAGRAM_AVAILABLE = True
+except Exception:
+    _DIAGRAM_AVAILABLE = False
+    def render_pipeline_diagram() -> None:  # type: ignore[misc]
+        pass
+    def render_agent_nav_buttons() -> None:  # type: ignore[misc]
+        pass
 
 from integration_bridge import Finding, GarakParser
 from output import OutputOrchestrator
