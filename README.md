@@ -7,7 +7,7 @@
 
 **RemediAX** is an AI security remediation engine that scans LLM applications for vulnerabilities, maps findings to OWASP LLM Top 10 and ASI Agentic Top 10, and auto-generates guardrails and remediation artifacts using Claude AI.
 
-Live app: [remediax.streamlit.app](https://remediax.streamlit.app)
+
 
 ---
 
