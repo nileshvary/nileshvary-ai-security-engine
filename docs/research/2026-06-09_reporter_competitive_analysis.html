@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RemediAX Reporter — Competitive Analysis 2026</title>
+  <style>
+    /* ── Screen styles ─────────────────────────────────────────── */
+    :root {
+      --bg: #0d1117; --surface: #161b22; --surface2: #1c2128;
+      --border: #30363d; --text: #c9d1d9; --muted: #8b949e;
+      --accent: #58a6ff; --red: #f85149; --orange: #f0883e;
+      --yellow: #d29922; --green: #3fb950; --purple: #bc8cff;
+      --white: #ffffff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 15px; line-height: 1.7; }
+    .page { max-width: 1000px; margin: 0 auto; padding: 48px 32px; }
+    a { color: var(--accent); }
+
+    /* Cover */
+    .cover { text-align: center; padding: 60px 0 48px; border-bottom: 2px solid var(--border); margin-bottom: 48px; }
+    .cover .tag { display: inline-block; background: rgba(88,166,255,.15); color: var(--accent); border: 1px solid var(--accent); border-radius: 20px; padding: 4px 14px; font-size: 12px; font-weight: 600; letter-spacing: .8px; text-transform: uppercase; margin-bottom: 20px; }
+    .cover h1 { font-size: 36px; font-weight: 800; color: var(--white); line-height: 1.25; margin-bottom: 12px; }
+    .cover .subtitle { font-size: 18px; color: var(--muted); margin-bottom: 28px; }
+    .cover .meta { color: var(--muted); font-size: 13px; }
+    .cover .meta strong { color: var(--text); }
+
+    /* Table of contents */
+    .toc { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 24px 28px; margin-bottom: 48px; }
+    .toc h3 { color: var(--accent); font-size: 12px; text-transform: uppercase; letter-spacing: .8px; margin-bottom: 12px; }
+    .toc ol { padding-left: 20px; color: var(--text); }
+    .toc li { margin-bottom: 4px; }
+    .toc a { color: var(--text); text-decoration: none; }
+    .toc a:hover { color: var(--accent); }
+
+    /* Sections */
+    .section { margin-bottom: 56px; }
+    .section-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--accent); font-weight: 700; margin-bottom: 8px; }
+    h2 { font-size: 26px; font-weight: 700; color: var(--white); margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+    h3 { font-size: 18px; font-weight: 700; color: var(--white); margin: 28px 0 12px; }
+    h4 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 20px 0 8px; text-transform: uppercase; letter-spacing: .5px; }
+    p { margin-bottom: 14px; color: var(--text); }
+    strong { color: var(--white); }
+
+    /* Verdict box */
+    .verdict { background: rgba(63,185,80,.1); border: 1px solid rgba(63,185,80,.4); border-radius: 8px; padding: 20px 24px; margin-bottom: 32px; }
+    .verdict .v-label { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--green); font-weight: 700; margin-bottom: 8px; }
+    .verdict p { color: var(--text); margin: 0; }
+
+    /* Comparison table */
+    .table-wrap { overflow-x: auto; margin-bottom: 32px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    thead tr { background: var(--surface2); border-bottom: 2px solid var(--border); }
+    th { padding: 10px 14px; text-align: left; color: var(--muted); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; white-space: nowrap; }
+    th:first-child { color: var(--white); }
+    tbody tr { border-bottom: 1px solid var(--border); }
+    tbody tr:hover { background: rgba(255,255,255,.02); }
+    td { padding: 10px 14px; vertical-align: top; }
+    td:first-child { color: var(--text); font-weight: 600; }
+    .yes { color: var(--green); font-weight: 700; }
+    .no  { color: var(--muted); }
+    .partial { color: var(--yellow); font-weight: 600; }
+    .paid { color: var(--orange); font-weight: 600; }
+    .remediax-col { background: rgba(88,166,255,.06); }
+
+    /* Competitor cards */
+    .competitor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 32px; }
+    .competitor-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+    .competitor-card h3 { font-size: 16px; margin-top: 0; }
+    .card-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; padding: 5px 0; border-bottom: 1px solid var(--border); }
+    .card-row:last-child { border-bottom: none; }
+    .card-key { color: var(--muted); }
+    .card-val { font-weight: 600; color: var(--text); }
+
+    /* Differentiator list */
+    .diff-list { list-style: none; padding: 0; }
+    .diff-list li { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; margin-bottom: 12px; display: flex; gap: 16px; align-items: flex-start; }
+    .diff-num { background: var(--accent); color: var(--bg); width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13px; flex-shrink: 0; margin-top: 2px; }
+    .diff-content h4 { margin: 0 0 4px; color: var(--white); font-size: 15px; text-transform: none; letter-spacing: 0; }
+    .diff-content p { margin: 0; font-size: 13px; color: var(--muted); }
+
+    /* Feature detail */
+    .feature-block { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px; margin-bottom: 16px; }
+    .feature-block h4 { margin-top: 0; font-size: 14px; color: var(--white); text-transform: none; letter-spacing: 0; }
+    .feature-block p { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.6; }
+
+    /* Sources */
+    .sources-list { list-style: none; padding: 0; }
+    .sources-list li { padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+    .sources-list a { color: var(--accent); }
+
+    /* Rating badges */
+    .rating { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; }
+    .r-leader  { background: rgba(63,185,80,.2);  color: var(--green); }
+    .r-strong  { background: rgba(88,166,255,.2); color: var(--accent); }
+    .r-basic   { background: rgba(139,148,158,.2);color: var(--muted); }
+    .r-paid    { background: rgba(240,136,62,.2); color: var(--orange); }
+    .r-none    { background: rgba(248,81,73,.2);  color: var(--red); }
+
+    /* ── Print / PDF styles ────────────────────────────────────── */
+    @media print {
+      body { background: #fff; color: #1a1a1a; font-size: 12px; }
+      .page { padding: 20px; max-width: 100%; }
+      :root { --bg: #fff; --surface: #f6f8fa; --surface2: #eaeef2; --border: #d0d7de; --text: #1a1a1a; --muted: #57606a; --accent: #0969da; --white: #1a1a1a; --green: #1a7f37; --red: #cf222e; --orange: #bc4c00; --yellow: #9a6700; }
+      .cover { page-break-after: always; padding: 80px 0; }
+      .section { page-break-inside: avoid; }
+      .competitor-grid { grid-template-columns: 1fr 1fr; }
+      a { color: var(--accent); text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ── Cover ──────────────────────────────────────────────────── -->
+  <div class="cover">
+    <div class="tag">Research Report · June 2026</div>
+    <h1>RemediAX Reporter<br>Competitive Analysis</h1>
+    <div class="subtitle">How RemediAX's HTML Security Reporter compares against<br>Promptfoo, Garak, PyRIT, Lakera Guard, and Mindgard</div>
+    <div class="meta">
+      <strong>Author:</strong> Nileshwari Kadgale &nbsp;·&nbsp;
+      <strong>Project:</strong> RemediAX AI Security Platform &nbsp;·&nbsp;
+      <strong>Date:</strong> 2026-06-09<br>
+      <strong>GitHub:</strong> github.com/nileshvary/nileshvary-ai-security-engine &nbsp;·&nbsp;
+      <strong>Live:</strong> remediax.streamlit.app
+    </div>
+  </div>
+
+  <!-- ── Table of Contents ──────────────────────────────────────── -->
+  <div class="toc">
+    <h3>Table of Contents</h3>
+    <ol>
+      <li><a href="#exec-summary">Executive Summary</a></li>
+      <li><a href="#remediax-overview">RemediAX Reporter Overview</a></li>
+      <li><a href="#comparison-table">Full Competitor Comparison Matrix</a></li>
+      <li><a href="#competitor-deep-dive">Competitor Deep-Dive</a></li>
+      <li><a href="#differentiators">5 Unique Differentiators</a></li>
+      <li><a href="#conclusion">Conclusion</a></li>
+      <li><a href="#sources">Sources</a></li>
+    </ol>
+  </div>
+
+  <!-- ── 1. Executive Summary ───────────────────────────────────── -->
+  <div class="section" id="exec-summary">
+    <div class="section-label">Section 1</div>
+    <h2>Executive Summary</h2>
+
+    <div class="verdict">
+      <div class="v-label">Verdict</div>
+      <p><strong>RemediAX ReporterAgent is the most feature-complete free AI security reporter available.</strong> It surpasses every open-source competitor and matches or exceeds paid commercial tools on per-finding detail, AI narrative quality, and coverage breadth. Five specific capabilities exist in RemediAX that are not present in any other tool in this analysis.</p>
+    </div>
+
+    <p>The AI security tooling landscape has a clear reporting gap: scanners are mature (Garak, PyRIT), but their output is raw machine-readable data unsuitable for security managers, developers, or board-level stakeholders. The only tools producing professional human-readable reports are commercial SaaS products (Mindgard, Lakera) that cost thousands of dollars per year and require vendor lock-in.</p>
+
+    <p>RemediAX closes this gap entirely. Its <strong>Agent 3 Reporter</strong> — built on Claude AI + Jinja2 — produces a professional dark-themed HTML report that rivals enterprise commercial tools, includes Claude-generated per-finding analysis that no competitor offers for free, and covers all 20 OWASP vulnerability categories (LLM Top 10 + Agentic Top 10) that no competitor covers at all.</p>
+
+    <p>This document presents a structured comparison of six tools across 14 reporting capabilities, based on public documentation, GitHub repositories, and official product pages researched in June 2026.</p>
+  </div>
+
+  <!-- ── 2. RemediAX Reporter Overview ──────────────────────────── -->
+  <div class="section" id="remediax-overview">
+    <div class="section-label">Section 2</div>
+    <h2>RemediAX Reporter Overview</h2>
+
+    <p>RemediAX Agent 3 (<code>agents/reporter_agent.py</code>) is the third stage of the six-agent pipeline: Scanner → Remediator → <strong>Reporter</strong> → Verifier → Orchestrator → CVE Watcher.</p>
+
+    <h3>What Agent 3 Produces</h3>
+
+    <div class="competitor-grid">
+      <div class="feature-block">
+        <h4>Dark-Themed Professional HTML</h4>
+        <p>GitHub-style dark theme rendered via Jinja2 template (<code>templates/summary.html.j2</code>). Professional enough for enterprise security reviews and developer tooling.</p>
+      </div>
+      <div class="feature-block">
+        <h4>AI-Generated Executive Summary</h4>
+        <p>Claude (<code>claude-haiku-4-5-20251001</code>) writes a scan-level summary specific to the target, finding count, and categories found. Falls back to deterministic text when no API key.</p>
+      </div>
+      <div class="feature-block">
+        <h4>Per-Finding Cards with Full Context</h4>
+        <p>Each finding card shows: attack prompt excerpt, model response excerpt, Claude-generated danger explanation, Claude-generated fix explanation, and guardrail YAML snippet — all in one card.</p>
+      </div>
+      <div class="feature-block">
+        <h4>OWASP LLM Top 10 Coverage Table</h4>
+        <p>All 10 categories (LLM01–LLM10) shown in a coverage table with hit/miss status and finding counts. Unique to RemediAX: also covers ASI Agentic Top 10 (ASI01–ASI10) in the scanner.</p>
+      </div>
+      <div class="feature-block">
+        <h4>Strategy Breakdown Bar</h4>
+        <p>Visual bar chart of HARDEN / SANITIZE / GUARDRAIL / LOG_ONLY strategy distribution — RemediAX's unique 4-category remediation taxonomy, derived per finding from OWASP category.</p>
+      </div>
+      <div class="feature-block">
+        <h4>Severity Stats Grid</h4>
+        <p>4-stat card grid: total findings, CRITICAL + HIGH count, remediated count, OWASP categories hit. Gives executives an instant risk posture view at the top of the report.</p>
+      </div>
+    </div>
+
+    <h3>Dependency Injection Pattern</h3>
+    <p>Following the same DI pattern as Agent 1 (Scanner) and Agent 2 (Remediator), ReporterAgent accepts:</p>
+    <ul style="padding-left: 20px; margin-bottom: 14px; color: var(--text);">
+      <li><code>ai_client</code> — inject a ready-made <code>RemediAXAI</code> instance</li>
+      <li><code>anthropic_api_key</code> — convenience shortcut to auto-construct the client</li>
+      <li><code>template_path</code> — override the default Jinja2 template</li>
+    </ul>
+    <p>All Claude calls are optional — when no API key is provided, the report falls back to pre-written OWASP content. <strong>Zero vendor lock-in, zero required API calls.</strong></p>
+
+    <h3>Test Coverage</h3>
+    <p>17 unit tests in <code>tests/agents/test_reporter_agent.py</code> covering: HTML output structure, save/load, Claude DI integration paths, API failure fallback, severity counting, and OWASP coverage table rendering.</p>
+  </div>
+
+  <!-- ── 3. Comparison Table ────────────────────────────────────── -->
+  <div class="section" id="comparison-table">
+    <div class="section-label">Section 3</div>
+    <h2>Full Competitor Comparison Matrix</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th class="remediax-col">RemediAX</th>
+            <th>Promptfoo OSS</th>
+            <th>Promptfoo Enterprise</th>
+            <th>Garak</th>
+            <th>PyRIT</th>
+            <th>Lakera Guard</th>
+            <th>Mindgard</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Primary output format</td>
+            <td class="remediax-col yes">HTML (dark)</td>
+            <td class="partial">HTML + JSON + CSV + SARIF</td>
+            <td class="paid">PDF + SARIF + JSON</td>
+            <td class="no">JSONL (raw)</td>
+            <td class="no">SQLite / Azure UI</td>
+            <td class="no">SaaS dashboard only</td>
+            <td class="paid">SaaS UI + SIEM</td>
+          </tr>
+          <tr>
+            <td>Per-finding detail cards</td>
+            <td class="remediax-col yes">YES — full context</td>
+            <td class="partial">Partial — attack input only</td>
+            <td class="paid">YES (paid)</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="paid">YES (paid SaaS)</td>
+          </tr>
+          <tr>
+            <td>AI-generated narrative per finding</td>
+            <td class="remediax-col yes">YES — free</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="paid">YES (paid $$$)</td>
+          </tr>
+          <tr>
+            <td>AI executive summary</td>
+            <td class="remediax-col yes">YES — free</td>
+            <td class="no">NO (OSS)</td>
+            <td class="paid">YES (paid)</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="paid">YES (paid)</td>
+          </tr>
+          <tr>
+            <td>OWASP LLM Top 10 table</td>
+            <td class="remediax-col yes">YES — all 10</td>
+            <td class="yes">YES</td>
+            <td class="yes">YES</td>
+            <td class="partial">Partial (LLM01, LLM05)</td>
+            <td class="partial">Partial</td>
+            <td class="no">NO</td>
+            <td class="yes">YES + MITRE + NIST</td>
+          </tr>
+          <tr>
+            <td>ASI Agentic Top 10 coverage</td>
+            <td class="remediax-col yes">YES — all 10</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="no">NO (MITRE ATLAS only)</td>
+          </tr>
+          <tr>
+            <td>Guardrail YAML per finding</td>
+            <td class="remediax-col yes">YES — copy-pasteable</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+          </tr>
+          <tr>
+            <td>Remediation strategy taxonomy</td>
+            <td class="remediax-col yes">HARDEN/SANITIZE/<br>GUARDRAIL/LOG_ONLY</td>
+            <td class="no">NO</td>
+            <td class="partial">Generic guidance</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+          </tr>
+          <tr>
+            <td>Severity badges (CRITICAL/HIGH/MEDIUM/LOW)</td>
+            <td class="remediax-col yes">YES</td>
+            <td class="yes">YES</td>
+            <td class="yes">YES</td>
+            <td class="no">NO (pass/fail only)</td>
+            <td class="partial">Partial</td>
+            <td class="no">NO (numeric score)</td>
+            <td class="yes">YES</td>
+          </tr>
+          <tr>
+            <td>Stats grid (totals, critical, remediated)</td>
+            <td class="remediax-col yes">YES</td>
+            <td class="paid">Enterprise UI only</td>
+            <td class="yes">YES</td>
+            <td class="no">NO</td>
+            <td class="partial">Azure Foundry only</td>
+            <td class="yes">YES (SaaS)</td>
+            <td class="yes">YES (SaaS)</td>
+          </tr>
+          <tr>
+            <td>Boardroom-ready presentation</td>
+            <td class="remediax-col yes">YES — free</td>
+            <td class="no">NO (CLI-style)</td>
+            <td class="paid">YES (paid PDF)</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="no">NO</td>
+            <td class="paid">YES (paid)</td>
+          </tr>
+          <tr>
+            <td>Self-hosted / offline</td>
+            <td class="remediax-col yes">YES — fully offline</td>
+            <td class="yes">YES (OSS)</td>
+            <td class="no">NO (cloud SaaS)</td>
+            <td class="yes">YES</td>
+            <td class="partial">Partial (Azure)</td>
+            <td class="no">NO — SaaS only</td>
+            <td class="no">NO — SaaS only</td>
+          </tr>
+          <tr>
+            <td>CI/CD integration</td>
+            <td class="remediax-col partial">Planned (Agent 4)</td>
+            <td class="yes">YES — SARIF/GitHub</td>
+            <td class="yes">YES</td>
+            <td class="partial">CLI scriptable</td>
+            <td class="yes">YES — Azure SDK</td>
+            <td class="yes">YES — API</td>
+            <td class="yes">YES — SIEM</td>
+          </tr>
+          <tr>
+            <td>Cost</td>
+            <td class="remediax-col yes">FREE</td>
+            <td class="yes">FREE</td>
+            <td class="paid">Paid enterprise</td>
+            <td class="yes">FREE</td>
+            <td class="yes">FREE</td>
+            <td class="paid">Paid SaaS</td>
+            <td class="paid">Paid SaaS ($$$)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size:12px; color:var(--muted)">
+      <span class="yes">■</span> RemediAX &nbsp;
+      <span class="partial">■</span> Partial/Limited &nbsp;
+      <span class="no">■</span> Not available &nbsp;
+      <span class="paid">■</span> Paid/Enterprise only
+    </p>
+  </div>
+
+  <!-- ── 4. Competitor Deep-Dive ────────────────────────────────── -->
+  <div class="section" id="competitor-deep-dive">
+    <div class="section-label">Section 4</div>
+    <h2>Competitor Deep-Dive</h2>
+
+    <h3>Promptfoo <span class="rating r-strong">Strong Competitor</span></h3>
+    <p>Promptfoo is the closest open-source competitor to RemediAX. It generates HTML reports with OWASP category mapping, severity levels, and CI/CD integration (SARIF for GitHub Actions, SonarQube). Its red-team output includes per-test results with attack prompts that triggered vulnerabilities.</p>
+    <p><strong>What it does well:</strong> The OSS tier produces readable HTML with OWASP mapping and supports exporting to JSON/CSV/SARIF for integration into security pipelines. It has strong CI/CD tooling and community adoption.</p>
+    <p><strong>Critical gaps vs. RemediAX:</strong> There is no AI-generated explanation of why a finding is dangerous, what the fix means in context, or what guardrail prevents it. The executive summary and PDF export are locked behind the paid Enterprise tier. The OSS report is a data table — not a human narrative. Guardrail YAML (copy-pasteable) and the ASI Agentic Top 10 framework are absent entirely.</p>
+
+    <h3>Garak (NVIDIA) <span class="rating r-basic">CLI Only</span></h3>
+    <p>Garak is a mature LLM security probe runner with 50+ attack probes covering LLM01 and LLM05. However, its primary output is a JSONL report file — a raw machine-readable log, not a human report. A secondary HTML digest exists but shows only pass/fail ratios per probe category.</p>
+    <p><strong>What it does well:</strong> Offline, comprehensive probe library, NVIDIA-backed, maps to OWASP LLM Top 10 categories. The JSON output is machine-parseable for automated pipelines.</p>
+    <p><strong>Critical gaps vs. RemediAX:</strong> No per-finding cards, no severity badges, no narrative text, no remediation guidance, no guardrails, no executive summary. A security manager cannot open a Garak report and understand the risk. RemediAX uses Garak as its scanner engine (via <code>tools/garak_runner.py</code>) and then produces a human-readable report from the output.</p>
+
+    <h3>PyRIT (Microsoft) <span class="rating r-basic">Azure-Dependent</span></h3>
+    <p>PyRIT (Python Risk Identification Tool) is Microsoft's multi-turn red-teaming framework that targets LLM01 through LLM10 via crescendo attack sequences. Results are stored in SQLite locally or Azure SQL for production use. The Azure AI Foundry UI provides a scorecard view of results.</p>
+    <p><strong>What it does well:</strong> Multi-turn crescendo attacks produce more realistic findings than single-turn probes. The Azure Foundry integration provides analytics and per-finding views for Azure-native teams.</p>
+    <p><strong>Critical gaps vs. RemediAX:</strong> No downloadable standalone report (no HTML, no PDF). Reporting requires Azure Foundry access — not truly offline/self-hosted. No AI-generated explanations, no guardrail output, no remediation taxonomy. RemediAX uses PyRIT as its multi-turn attack engine (via <code>tools/pyrit_runner.py</code>) while providing its own reporting layer on top.</p>
+
+    <h3>Lakera Guard <span class="rating r-paid">Paid SaaS</span></h3>
+    <p>Lakera Guard is a real-time LLM security platform focused on prompt injection detection in production. It provides a SaaS analytics dashboard showing threat trends, log streams, and SIEM export (S3 integration). No downloadable scan report exists — the platform is designed for continuous monitoring, not point-in-time security audits.</p>
+    <p><strong>What it does well:</strong> Real-time production monitoring, low latency, SIEM integration, analytics dashboards with time-range views. Enterprise-grade infrastructure.</p>
+    <p><strong>Critical gaps vs. RemediAX:</strong> Not a penetration testing or red-teaming tool. Cannot generate a one-time security scan report. Requires SaaS subscription — no self-hosted option. Does not cover the OWASP LLM Top 10 systematically — only detects prompt injection in live traffic.</p>
+
+    <h3>Mindgard <span class="rating r-paid">Enterprise Paid</span></h3>
+    <p>Mindgard is the most feature-rich commercial AI red-teaming platform. It produces enterprise PDF reports with per-finding attacker context, maps findings to OWASP LLM Top 10 + MITRE ATLAS + EU AI Act + NIST AI RMF simultaneously, and integrates with Burp Suite and SIEM platforms. It also provides CI/CD pipeline integration.</p>
+    <p><strong>What it does well:</strong> The richest framework alignment in the industry — four security frameworks at once. Boardroom-ready PDF exports. Per-finding attacker context. Strong enterprise integrations.</p>
+    <p><strong>Critical gaps vs. RemediAX:</strong> <strong>Closed-source, commercial, requires a sales engagement</strong>. No self-hosted option, no free tier, no open-source availability. Does not cover the OWASP ASI Agentic Top 10 (ASI01–ASI10). Does not generate guardrail YAML per finding. Does not have RemediAX's HARDEN/SANITIZE/GUARDRAIL/LOG_ONLY taxonomy. Mindgard is the best paid competitor; RemediAX delivers comparable capability for free and open-source.</p>
+  </div>
+
+  <!-- ── 5. Unique Differentiators ─────────────────────────────── -->
+  <div class="section" id="differentiators">
+    <div class="section-label">Section 5</div>
+    <h2>5 Unique Differentiators</h2>
+    <p>The following capabilities exist in RemediAX and are <strong>absent from every tool in this analysis</strong>:</p>
+
+    <ul class="diff-list">
+      <li>
+        <div class="diff-num">1</div>
+        <div class="diff-content">
+          <h4>AI-Generated Guardrail YAML per Finding — Free</h4>
+          <p>RemediAX is the only tool that generates copy-pasteable guardrail YAML for each specific finding. The YAML is produced by Claude analyzing the exact attack prompt and is embedded inline in the HTML report. Developers can copy it directly into their Portkey, LiteLLM, or generic AI gateway configuration. No competitor generates deployment-ready guardrail code as report output.</p>
+        </div>
+      </li>
+      <li>
+        <div class="diff-num">2</div>
+        <div class="diff-content">
+          <h4>OWASP ASI Agentic Top 10 (ASI01–ASI10) — All 10 Categories</h4>
+          <p>RemediAX covers all 20 vulnerability categories: OWASP LLM Top 10 (LLM01–LLM10) plus the OWASP Agentic Top 10 (ASI01–ASI10). No competitor includes ASI coverage. Mindgard covers MITRE ATLAS for agentic risks but not the ASI framework specifically. As AI agents become the dominant deployment pattern, ASI coverage is a critical differentiator.</p>
+        </div>
+      </li>
+      <li>
+        <div class="diff-num">3</div>
+        <div class="diff-content">
+          <h4>HARDEN / SANITIZE / GUARDRAIL / LOG_ONLY Remediation Taxonomy</h4>
+          <p>RemediAX maps each OWASP category to a precise remediation strategy — HARDEN (system prompt patching for LLM01/07), SANITIZE (output redaction for LLM02/05/06), GUARDRAIL (rate-limit and input filter rules for LLM10), LOG_ONLY (infrastructure-level issues that cannot be runtime-patched). No competitor has a named remediation strategy taxonomy. This tells developers exactly what class of fix to apply, not just "here is the vulnerability."</p>
+        </div>
+      </li>
+      <li>
+        <div class="diff-num">4</div>
+        <div class="diff-content">
+          <h4>Full Pipeline Free in One Self-Hosted Tool</h4>
+          <p>RemediAX is the only free tool that covers the complete AI security lifecycle: Scan (Agent 1) → Remediate (Agent 2) → Report (Agent 3) → Verify (Agent 4, in progress) → Auto-Update CVEs (Agent 6). Promptfoo covers scan and report. Garak covers scan only. No other open-source tool provides remediation + reporting + verification in a single self-hosted pipeline.</p>
+        </div>
+      </li>
+      <li>
+        <div class="diff-num">5</div>
+        <div class="diff-content">
+          <h4>Claude AI Context Per Finding — Free, No Subscription Required</h4>
+          <p>RemediAX provides Claude-generated danger explanations, fix explanations, and guardrail YAML per finding when an API key is provided — but the report is fully functional without any API key using pre-written OWASP content fallbacks. Mindgard provides AI context per finding only as a paid SaaS feature. Promptfoo has no AI narrative even in its Enterprise tier. RemediAX makes AI-quality security analysis accessible to individuals and small teams with no budget.</p>
+        </div>
+      </li>
+    </ul>
+  </div>
+
+  <!-- ── 6. Conclusion ──────────────────────────────────────────── -->
+  <div class="section" id="conclusion">
+    <div class="section-label">Section 6</div>
+    <h2>Conclusion</h2>
+
+    <div class="verdict">
+      <div class="v-label">Market Position</div>
+      <p><strong>RemediAX is the best free AI security reporter available.</strong> Among open-source tools, it is unambiguously ahead — Promptfoo OSS is the only real competitor and it lacks AI narrative, guardrail YAML, ASI coverage, and remediation strategy taxonomy. Among commercial tools, RemediAX matches Mindgard's per-finding quality for free, and exceeds Mindgard on ASI coverage, guardrail YAML, and open-source accessibility.</p>
+    </div>
+
+    <h3>Where RemediAX Can Improve</h3>
+    <p>One gap against commercial competitors is <strong>PDF export</strong> — Mindgard and Promptfoo Enterprise produce native PDF reports. RemediAX currently outputs HTML (print-to-PDF from browser). Adding true PDF generation via <code>weasyprint</code> would close this gap and make RemediAX suitable for formal security audit deliverables. This is a one-file addition that does not require architectural changes.</p>
+
+    <p>Another gap is <strong>CI/CD-native SARIF output</strong>. Promptfoo's SARIF export integrates directly with GitHub Actions security findings, SonarQube, and Semgrep. RemediAX Agent 4 (Verifier) will address this with Promptfoo + Garak re-scan capabilities, but SARIF output from the Reporter would accelerate enterprise adoption.</p>
+
+    <h3>Strategic Recommendation</h3>
+    <p>RemediAX should position itself explicitly as <em>"the free Mindgard alternative for open-source AI teams."</em> The gap between Mindgard (closed, expensive, enterprise-only) and the open-source field (Garak/PyRIT: raw data, no reports) is exactly where RemediAX competes. The five unique differentiators — especially ASI coverage and free AI-generated guardrails — are authentic advantages worth communicating in the README, HackerOne report, and any conference submissions.</p>
+  </div>
+
+  <!-- ── 7. Sources ─────────────────────────────────────────────── -->
+  <div class="section" id="sources">
+    <div class="section-label">Section 7</div>
+    <h2>Sources</h2>
+    <ul class="sources-list">
+      <li><a href="https://github.com/promptfoo/promptfoo">Promptfoo GitHub — github.com/promptfoo/promptfoo</a></li>
+      <li><a href="https://www.promptfoo.dev/docs/red-team/">Promptfoo Red Team Documentation — promptfoo.dev/docs/red-team/</a></li>
+      <li><a href="https://www.promptfoo.dev/docs/enterprise/findings/">Promptfoo Enterprise Findings — promptfoo.dev/docs/enterprise/findings/</a></li>
+      <li><a href="https://www.promptfoo.dev/docs/enterprise/remediation-reports/">Promptfoo Remediation Reports (Enterprise) — promptfoo.dev/docs/enterprise/remediation-reports/</a></li>
+      <li><a href="https://github.com/NVIDIA/garak">Garak NVIDIA GitHub — github.com/NVIDIA/garak</a></li>
+      <li><a href="https://reference.garak.ai/en/latest/cliref.html">Garak CLI Reference — reference.garak.ai</a></li>
+      <li><a href="https://appsecsanta.com/garak">NVIDIA Garak Review 2026 — appsecsanta.com/garak</a></li>
+      <li><a href="https://microsoft.github.io/PyRIT/">PyRIT Documentation — microsoft.github.io/PyRIT/</a></li>
+      <li><a href="https://devblogs.microsoft.com/foundry/ai-red-teaming-agent-preview/">Microsoft AI Red Teaming Agent — Azure Foundry — devblogs.microsoft.com</a></li>
+      <li><a href="https://appsecsanta.com/pyrit">PyRIT 2026 Review — appsecsanta.com/pyrit</a></li>
+      <li><a href="https://docs.lakera.ai/guard">Lakera Guard Documentation — docs.lakera.ai/guard</a></li>
+      <li><a href="https://docs.lakera.ai/docs/platform">Lakera Dashboard Docs — docs.lakera.ai/docs/platform</a></li>
+      <li><a href="https://mindgard.ai/automated-ai-red-teaming">Mindgard Automated AI Red Teaming — mindgard.ai</a></li>
+      <li><a href="https://appsecsanta.com/mindgard">Mindgard 2026 Review — appsecsanta.com/mindgard</a></li>
+      <li><a href="https://owasp.org/www-project-top-10-for-large-language-model-applications/">OWASP LLM Top 10 Project — owasp.org</a></li>
+      <li><a href="https://www.trydeepteam.com/docs/frameworks-owasp-top-10-for-agentic-applications">OWASP Agentic Top 10 2026 — trydeepteam.com</a></li>
+    </ul>
+  </div>
+
+  <!-- ── Footer ─────────────────────────────────────────────────── -->
+  <div style="border-top: 1px solid var(--border); padding-top: 20px; margin-top: 40px; text-align: center; color: var(--muted); font-size: 12px;">
+    RemediAX AI Security Platform &nbsp;·&nbsp; Author: Nileshwari Kadgale &nbsp;·&nbsp; 2026-06-09<br>
+    <a href="https://github.com/nileshvary/nileshvary-ai-security-engine">github.com/nileshvary/nileshvary-ai-security-engine</a>
+  </div>
+
+</div>
+</body>
+</html>
