@@ -574,17 +574,21 @@ def _attempt_firebase_url_auto_login() -> None:
 _GLOBAL_CSS = """
 <style>
 :root {
-  --bg-primary: #0a0e1a;
-  --bg-card: #0d1117;
-  --bg-hover: #161b22;
-  --border: #1e3a5f;
-  --accent-cyan: #00d4ff;
-  --accent-blue: #0080ff;
-  --success: #00ff88;
-  --warning: #ffaa00;
-  --danger: #ff4444;
-  --text-primary: #e6edf3;
-  --text-secondary: #8b949e;
+  --bg-primary: #0A0F1E;
+  --bg-card: #0D1520;
+  --bg-hover: #111827;
+  --bg-glass: rgba(13, 21, 32, 0.75);
+  --border: #1A2744;
+  --border-glass: rgba(139, 92, 246, 0.18);
+  --accent-cyan: #06B6D4;
+  --accent-blue: #3B82F6;
+  --accent-purple: #8B5CF6;
+  --accent-orange: #F97316;
+  --success: #10B981;
+  --warning: #F97316;
+  --danger: #EF4444;
+  --text-primary: #F9FAFB;
+  --text-secondary: #94A3B8;
 }
 .stApp { background-color: var(--bg-primary); }
 /* Generous top padding so the hero card's cyan box-shadow glow
@@ -1168,6 +1172,232 @@ h1, h2, h3, h4, h5 { color: var(--text-primary) !important; }
 .rx-bottom-bar .rx-bb-item { color: #e6edf3; }
 .rx-bottom-bar .rx-bb-sep { color: #1e3a5f; }
 .rx-bottom-bar .rx-bb-author { color: #00d4ff; }
+
+/* ===================================================================
+   Enterprise Dashboard — Glassmorphism Components
+   =================================================================== */
+
+/* Glass card — base for all dashboard panels */
+.rx-glass-card {
+  background: var(--bg-glass);
+  border: 1px solid var(--border-glass);
+  border-radius: 14px;
+  padding: 20px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.35);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.rx-glass-card:hover {
+  border-color: rgba(139, 92, 246, 0.38);
+  box-shadow: 0 4px 32px rgba(139,92,246,0.14);
+}
+
+/* KPI metric cards */
+.rx-kpi-card {
+  background: var(--bg-glass);
+  border: 1px solid var(--border-glass);
+  border-radius: 14px;
+  padding: 18px 20px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  text-align: center;
+  transition: border-color 0.2s, transform 0.15s;
+  position: relative;
+  overflow: hidden;
+}
+.rx-kpi-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: var(--kpi-color, var(--accent-purple));
+  border-radius: 14px 14px 0 0;
+}
+.rx-kpi-card:hover {
+  border-color: rgba(139, 92, 246, 0.35);
+  transform: translateY(-2px);
+}
+.rx-kpi-value {
+  font-size: 1.9rem;
+  font-weight: 800;
+  color: var(--kpi-color, var(--accent-purple));
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+.rx-kpi-label {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  margin-top: 5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.rx-kpi-trend {
+  font-size: 0.7rem;
+  margin-top: 6px;
+  font-weight: 600;
+}
+.rx-kpi-trend.up   { color: var(--success); }
+.rx-kpi-trend.down { color: var(--danger); }
+.rx-kpi-trend.neutral { color: var(--text-secondary); }
+
+/* Dashboard section title bar */
+.rx-dash-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-glass);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rx-dash-title-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent-purple);
+  flex-shrink: 0;
+}
+
+/* Recent alerts feed */
+.rx-alert-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid rgba(26, 39, 68, 0.55);
+}
+.rx-alert-item:last-child { border-bottom: none; }
+.rx-alert-dot {
+  flex-shrink: 0;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  margin-top: 5px;
+}
+.rx-alert-dot.critical { background: var(--danger);         box-shadow: 0 0 5px var(--danger); }
+.rx-alert-dot.high     { background: var(--accent-orange);  box-shadow: 0 0 5px var(--accent-orange); }
+.rx-alert-dot.medium   { background: #EAB308; }
+.rx-alert-dot.low      { background: var(--success); }
+.rx-alert-probe {
+  font-size: 0.79rem;
+  color: var(--text-primary);
+  font-weight: 500;
+  line-height: 1.35;
+}
+.rx-alert-meta {
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+.rx-severity-badge {
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.rx-severity-badge.critical { background: rgba(239,68,68,0.18);  color: #F87171; }
+.rx-severity-badge.high     { background: rgba(249,115,22,0.18); color: #FB923C; }
+.rx-severity-badge.medium   { background: rgba(234,179,8,0.18);  color: #FDE047; }
+.rx-severity-badge.low      { background: rgba(16,185,129,0.18); color: #34D399; }
+
+/* Top attacked assets */
+.rx-asset-row { margin: 10px 0; }
+.rx-asset-label {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 5px;
+}
+.rx-asset-name  { font-size: 0.79rem; color: var(--text-primary);   font-weight: 500; }
+.rx-asset-count { font-size: 0.79rem; color: var(--text-secondary); }
+.rx-progress-bar {
+  height: 4px;
+  background: rgba(26, 39, 68, 0.8);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.rx-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+}
+
+/* AI assistant chat bubbles */
+.rx-assistant-msg {
+  padding: 10px 13px;
+  border-radius: 10px;
+  margin: 6px 0;
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+.rx-assistant-msg.user {
+  background: rgba(139, 92, 246, 0.1);
+  border: 1px solid rgba(139, 92, 246, 0.22);
+  color: var(--text-primary);
+}
+.rx-assistant-msg.ai {
+  background: rgba(13, 21, 32, 0.85);
+  border: 1px solid var(--border-glass);
+  color: var(--text-primary);
+}
+
+/* Live pulse dot */
+.rx-live-dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: rx-pulse-red 1.5s infinite;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+
+/* Page layout helpers */
+.rx-dash-row {
+  display: flex; gap: 16px; margin-bottom: 16px;
+}
+
+/* Glass panel: inject <div class="rx-panel-glass"></div> as first child
+ * inside a st.column or st.container to get the glassmorphism card look.
+ * Uses :has() (Chrome 105+, Safari 15.4+, Firefox 121+). */
+[data-testid="stColumn"]:has(.rx-panel-glass) {
+  background: rgba(13, 21, 32, 0.72) !important;
+  border: 1px solid rgba(139, 92, 246, 0.18) !important;
+  border-radius: 14px !important;
+  padding: 16px 18px !important;
+  backdrop-filter: blur(10px) !important;
+  -webkit-backdrop-filter: blur(10px) !important;
+}
+/* Dashboard SOC header */
+.rx-soc-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.rx-soc-title {
+  font-size: 1.45rem;
+  font-weight: 800;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+.rx-soc-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(239,68,68,0.12);
+  border: 1px solid rgba(239,68,68,0.28);
+  color: #F87171;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
 </style>
 """
 
@@ -1525,44 +1755,87 @@ def _ts_label() -> str:
 def render_sidebar() -> None:
     """The Part 7 settings panel: AI mode, API key, voice, info."""
     with st.sidebar:
-        st.markdown("### 🛡️ RemediAX")
-        st.caption("AI Security, Human Control")
+        # Brand header
+        st.markdown(
+            '<div style="text-align:center;padding:6px 0 4px;">'
+            '<span style="font-size:1.3rem;font-weight:800;color:#8B5CF6;">'
+            "🛡️ RemediAX</span><br>"
+            '<span style="font-size:0.65rem;color:#94A3B8;letter-spacing:0.1em;">'
+            "AI SECURITY PLATFORM</span></div>",
+            unsafe_allow_html=True,
+        )
 
-        if st.button(
-            "🏠 Home",
-            use_container_width=True,
-            key="nav-home",
-            help="Return to the landing screen from any page.",
-        ):
-            st.session_state.screen = "landing"
-            st.rerun()
+        # --- Icon navigation (streamlit-option-menu) ---
+        try:
+            from streamlit_option_menu import option_menu as _option_menu  # lazy
 
-        if st.button(
-            "📡 Garak Scanner",
-            use_container_width=True,
-            key="nav-scanner",
-            help="Generate ready-to-run garak commands for your target.",
-        ):
-            st.session_state.screen = "scanner"
-            st.rerun()
+            _screen_to_nav = {
+                "landing": "Dashboard",
+                "scanner": "Scanner",
+                "analytics": "Analytics",
+                "pipeline_v2": "Pipeline v2",
+            }
+            _nav_to_screen = {v: k for k, v in _screen_to_nav.items()}
+            _nav_options = list(_screen_to_nav.values())
 
-        if st.button(
-            "📊 Analytics",
-            use_container_width=True,
-            key="nav-analytics",
-            help="Security operations analytics dashboard.",
-        ):
-            st.session_state.screen = "analytics"
-            st.rerun()
+            # Sync highlighted item with current screen; on sub-screens
+            # (results, review, etc.) keep the last explicitly chosen item.
+            if "nav_selection" not in st.session_state:
+                st.session_state.nav_selection = "Dashboard"
+            _cur = st.session_state.get("screen", "landing")
+            _current_nav = _screen_to_nav.get(_cur, st.session_state.nav_selection)
+            st.session_state.nav_selection = _current_nav
+            _default_idx = _nav_options.index(_current_nav)
 
-        if st.button(
-            "🔄 Full Pipeline v2",
-            use_container_width=True,
-            key="nav-pipeline-v2",
-            help="Run the full 6-agent pipeline: Scanner → Remediator → Reporter → Verifier.",
-        ):
-            st.session_state.screen = "pipeline_v2"
-            st.rerun()
+            _selected = _option_menu(
+                menu_title=None,
+                options=_nav_options,
+                icons=["house-fill", "shield-check", "bar-chart-fill", "diagram-3"],
+                default_index=_default_idx,
+                key="main_nav",
+                styles={
+                    "container": {
+                        "padding": "4px 0 6px",
+                        "background-color": "transparent",
+                    },
+                    "icon": {"color": "#94A3B8", "font-size": "13px"},
+                    "nav-link": {
+                        "font-size": "13px",
+                        "font-weight": "500",
+                        "color": "#94A3B8",
+                        "padding": "8px 10px",
+                        "border-radius": "8px",
+                        "margin": "1px 0",
+                    },
+                    "nav-link-selected": {
+                        "background-color": "rgba(139,92,246,0.15)",
+                        "color": "#8B5CF6",
+                        "font-weight": "600",
+                    },
+                },
+            )
+            if _selected != _current_nav:
+                st.session_state.screen = _nav_to_screen[_selected]
+                st.session_state.nav_selection = _selected
+                st.rerun()
+        except Exception:
+            # Fallback: plain buttons if package unavailable
+            st.markdown("### 🛡️ RemediAX")
+            st.caption("AI Security, Human Control")
+            if st.button("🏠 Home", use_container_width=True, key="nav-home"):
+                st.session_state.screen = "landing"
+                st.rerun()
+            if st.button("📡 Garak Scanner", use_container_width=True, key="nav-scanner"):
+                st.session_state.screen = "scanner"
+                st.rerun()
+            if st.button("📊 Analytics", use_container_width=True, key="nav-analytics"):
+                st.session_state.screen = "analytics"
+                st.rerun()
+            if st.button(
+                "🔄 Full Pipeline v2", use_container_width=True, key="nav-pipeline-v2"
+            ):
+                st.session_state.screen = "pipeline_v2"
+                st.rerun()
 
         st.divider()
         st.markdown("**AI mode**")
@@ -4286,20 +4559,106 @@ def _render_analytics_premium(
 
 
 def render_analytics() -> None:
-    """SECURITY OPERATIONS ANALYTICS dashboard."""
+    """Enterprise Security Operations Center dashboard."""
+    # Lazy imports — keep module-level clean
+    try:
+        from components.kpi_cards import render_kpi_cards
+        from components.network_animation import render_network_animation
+        from components.threat_charts import render_threat_donut, render_posture_trend
+        from components.alert_feed import render_alert_feed
+        from components.asset_table import render_asset_table
+        from components.ai_assistant import render_ai_assistant
+        _dash_available = True
+    except Exception:
+        _dash_available = False
+
+    # ── SOC header ────────────────────────────────────────────────────────
     st.markdown(
-        '<div class="remediax-hero"><h1>📊 SECURITY OPERATIONS ANALYTICS</h1>'
-        '<div class="tagline">Monitor your LLM security posture '
-        "over time</div></div>",
+        '<div class="rx-soc-header">'
+        '<div class="rx-soc-title">🛡️ Security Operations Center</div>'
+        '<div class="rx-soc-badge"><span class="rx-live-dot" style="margin-right:4px;"></span>LIVE</div>'
+        "</div>",
         unsafe_allow_html=True,
     )
 
-    history = _load_history()
-    uploads = _load_uploads()
+    if not _dash_available:
+        st.warning("Dashboard components unavailable. Check that streamlit-echarts and streamlit-option-menu are installed.")
+        return
+
+    # ── Row 1: KPI Cards ──────────────────────────────────────────────────
+    render_kpi_cards()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Row 2: Network animation + Recent alerts ──────────────────────────
+    col_net, col_alerts = st.columns([3, 2], gap="medium")
+    with col_net:
+        st.markdown('<div class="rx-panel-glass"></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="rx-dash-title"><div class="rx-dash-title-dot"></div>'
+            "Live Network Traffic</div>",
+            unsafe_allow_html=True,
+        )
+        render_network_animation(findings=st.session_state.get("findings"))
+    with col_alerts:
+        st.markdown('<div class="rx-panel-glass"></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="rx-dash-title"><div class="rx-dash-title-dot" '
+            'style="background:#EF4444;"></div>Recent Alerts</div>',
+            unsafe_allow_html=True,
+        )
+        render_alert_feed()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Row 3: Threat landscape + Security posture trend ──────────────────
+    col_donut, col_trend = st.columns(2, gap="medium")
+    with col_donut:
+        st.markdown('<div class="rx-panel-glass"></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="rx-dash-title"><div class="rx-dash-title-dot" '
+            'style="background:#F97316;"></div>Threat Landscape</div>',
+            unsafe_allow_html=True,
+        )
+        render_threat_donut()
+    with col_trend:
+        st.markdown('<div class="rx-panel-glass"></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="rx-dash-title"><div class="rx-dash-title-dot"></div>'
+            "Security Posture Trend</div>",
+            unsafe_allow_html=True,
+        )
+        render_posture_trend()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Row 4: Top attacked categories + AI assistant ─────────────────────
+    col_assets, col_ai = st.columns(2, gap="medium")
+    with col_assets:
+        st.markdown('<div class="rx-panel-glass"></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="rx-dash-title"><div class="rx-dash-title-dot" '
+            'style="background:#EF4444;"></div>Top Attacked Categories</div>',
+            unsafe_allow_html=True,
+        )
+        render_asset_table()
+    with col_ai:
+        st.markdown('<div class="rx-panel-glass"></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="rx-dash-title"><div class="rx-dash-title-dot" '
+            'style="background:#06B6D4;"></div>AI Security Assistant</div>',
+            unsafe_allow_html=True,
+        )
+        render_ai_assistant()
+
+    # ── Legacy scan history (premium/admin only, collapsed) ───────────────
     if st.session_state.get("is_admin") or _has_premium():
-        _render_analytics_premium(history, uploads)
-    else:
-        _render_analytics_basic(history, uploads)
+        history = _load_history()
+        uploads = _load_uploads()
+        if history or uploads:
+            st.markdown("<br>", unsafe_allow_html=True)
+            with st.expander("📂 Scan History & Upload Records", expanded=False):
+                _render_analytics_premium(history, uploads)
 
 
 # ---------------------------------------------------------------------------
