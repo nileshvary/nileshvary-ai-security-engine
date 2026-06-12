@@ -7,3 +7,5 @@ PyYAML>=6
 streamlit-option-menu>=0.4.0
 streamlit-echarts>=0.4.0
 streamlit-lottie>=0.0.5
+fastapi>=0.111.0
+uvicorn>=0.30.0

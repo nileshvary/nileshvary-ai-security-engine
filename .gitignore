@@ -258,3 +258,10 @@ docs/reports/**
 docs/research/**
 docs/exports/**
 !docs/**/.gitkeep
+
+# Next.js frontend
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local
+frontend/out/
+frontend/.turbo/
