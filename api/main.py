@@ -356,6 +356,99 @@ def post_assistant(req: AssistantRequest) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# GET /api/config  +  POST /api/config
+# ---------------------------------------------------------------------------
+
+_CONFIG_FILE = _ROOT / "config.json"
+_ENV_FILE = _ROOT / ".env"
+
+_CONFIG_DEFAULTS: dict[str, Any] = {
+    "target_url": "",
+    "system_prompt": "",
+    "scanners": ["garak", "pyrit", "vector"],
+    "pyrit_max_turns": 5,
+    "output_dir": "artifacts/",
+    "log_level": "INFO",
+}
+
+_API_KEY_FIELDS = {"anthropic_api_key", "openai_api_key", "mistral_api_key"}
+
+
+def _read_config() -> dict[str, Any]:
+    cfg = dict(_CONFIG_DEFAULTS)
+    if _CONFIG_FILE.exists():
+        try:
+            cfg.update(json.loads(_CONFIG_FILE.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    # Report which API keys are set (from env), never return the values
+    cfg["anthropic_api_key_set"] = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    cfg["openai_api_key_set"] = bool(os.environ.get("OPENAI_API_KEY"))
+    cfg["mistral_api_key_set"] = bool(os.environ.get("MISTRAL_API_KEY"))
+    return cfg
+
+
+def _write_env_key(key_name: str, value: str) -> None:
+    """Append or update KEY=value in .env file."""
+    env_key = key_name.upper()
+    lines: list[str] = []
+    if _ENV_FILE.exists():
+        lines = _ENV_FILE.read_text(encoding="utf-8").splitlines()
+    # Replace existing line or append
+    found = False
+    for i, line in enumerate(lines):
+        if line.startswith(f"{env_key}="):
+            lines[i] = f"{env_key}={value}"
+            found = True
+            break
+    if not found:
+        lines.append(f"{env_key}={value}")
+    _ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.environ[env_key] = value  # update current process too
+
+
+class ConfigPayload(BaseModel):
+    target_url: str | None = None
+    system_prompt: str | None = None
+    scanners: list[str] | None = None
+    pyrit_max_turns: int | None = None
+    output_dir: str | None = None
+    log_level: str | None = None
+    # API keys — written to .env, never stored in config.json
+    anthropic_api_key: str | None = None
+    openai_api_key: str | None = None
+    mistral_api_key: str | None = None
+
+
+@app.get("/api/config")
+def get_config() -> dict[str, Any]:
+    """Return current config. API key values are never returned — only whether they are set."""
+    return _read_config()
+
+
+@app.post("/api/config")
+def post_config(payload: ConfigPayload) -> dict[str, Any]:
+    """Save config fields to config.json; API keys go to .env only."""
+    cfg = _read_config()
+    # Remove sentinel fields before saving to JSON
+    for sentinel in ("anthropic_api_key_set", "openai_api_key_set", "mistral_api_key_set"):
+        cfg.pop(sentinel, None)
+
+    data = payload.model_dump(exclude_none=True)
+
+    # Handle API keys separately — write to .env
+    for key_field in _API_KEY_FIELDS:
+        if key_field in data:
+            _write_env_key(key_field, data.pop(key_field))
+
+    # Merge remaining fields into config.json
+    cfg.update(data)
+    _CONFIG_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    return {"status": "saved", **_read_config()}
+
+
+# ---------------------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------------------
 
