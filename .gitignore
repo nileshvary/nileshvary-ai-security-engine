@@ -257,6 +257,7 @@ docs/pdfs/**
 docs/reports/**
 docs/research/**
 docs/exports/**
+!docs/exports/*.md
 !docs/**/.gitkeep
 
 # Next.js frontend
