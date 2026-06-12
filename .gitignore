@@ -265,3 +265,9 @@ frontend/.next/
 frontend/.env.local
 frontend/out/
 frontend/.turbo/
+
+# Bolt React dashboard
+remediax-ui/node_modules/
+remediax-ui/.next/
+remediax-ui/out/
+remediax-ui/.turbo/
