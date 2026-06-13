@@ -385,6 +385,9 @@ def _read_config() -> dict[str, Any]:
     cfg["anthropic_api_key_set"] = bool(os.environ.get("ANTHROPIC_API_KEY"))
     cfg["openai_api_key_set"] = bool(os.environ.get("OPENAI_API_KEY"))
     cfg["mistral_api_key_set"] = bool(os.environ.get("MISTRAL_API_KEY"))
+    # Report which custom keys are set
+    cfg["custom_key_names"] = cfg.get("custom_key_names", [])
+    cfg["custom_keys_set"] = {k: bool(os.environ.get(k)) for k in cfg["custom_key_names"]}
     return cfg
 
 
@@ -418,6 +421,8 @@ class ConfigPayload(BaseModel):
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     mistral_api_key: str | None = None
+    # Custom API keys — dict of { KEY_NAME: value }, all written to .env
+    custom_keys: dict[str, str] | None = None
 
 
 @app.get("/api/config")
@@ -436,10 +441,22 @@ def post_config(payload: ConfigPayload) -> dict[str, Any]:
 
     data = payload.model_dump(exclude_none=True)
 
-    # Handle API keys separately — write to .env
+    # Handle fixed API keys — write to .env
     for key_field in _API_KEY_FIELDS:
         if key_field in data:
             _write_env_key(key_field, data.pop(key_field))
+
+    # Handle custom API keys — write each to .env, store names in config.json
+    custom_keys: dict[str, str] = data.pop("custom_keys", None) or {}
+    custom_key_names: list[str] = []
+    for key_name, key_value in custom_keys.items():
+        if key_name.strip():
+            _write_env_key(key_name.strip(), key_value)
+            custom_key_names.append(key_name.strip().upper())
+    if custom_key_names:
+        existing = cfg.get("custom_key_names", [])
+        merged = list(dict.fromkeys(existing + custom_key_names))
+        data["custom_key_names"] = merged
 
     # Merge remaining fields into config.json
     cfg.update(data)
