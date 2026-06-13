@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -467,6 +469,168 @@ def post_config(payload: ConfigPayload) -> dict[str, Any]:
     _CONFIG_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
 
     return {"status": "saved", **_read_config()}
+
+
+# ── Scan state ────────────────────────────────────────────────────────────────
+
+_scan_state: dict[str, Any] = {
+    "running": False,
+    "phase": "idle",       # idle | initializing | garak | pyrit | vector | saving | done | error
+    "progress": 0,         # 0–100
+    "findings_count": 0,
+    "severity_counts": {},
+    "started_at": None,
+    "finished_at": None,
+    "error": None,
+}
+_scan_lock = threading.Lock()
+
+
+def _run_scan_thread(scanners: list[str], pyrit_max_turns: int) -> None:
+    """Background thread: runs ScannerAgent and updates _scan_state."""
+    global _scan_state
+    try:
+        with _scan_lock:
+            _scan_state.update({"phase": "initializing", "progress": 5, "error": None})
+
+        # Lazy imports — only import runners that are enabled
+        garak_runner = None
+        pyrit_runner = None
+        vector_poisoner = None
+
+        if "garak" in scanners:
+            try:
+                from tools.garak_runner import GarakRunner
+                garak_runner = GarakRunner()
+            except Exception as e:
+                pass  # Garak unavailable — skip
+
+        if "pyrit" in scanners:
+            try:
+                from tools.pyrit_runner import PyRITRunner
+                pyrit_runner = PyRITRunner()
+            except Exception as e:
+                pass
+
+        if "vector" in scanners:
+            try:
+                from tools.vector_poisoner import VectorPoisoner
+                vector_poisoner = VectorPoisoner()
+            except Exception as e:
+                pass
+
+        from agents.scanner_agent import ScannerAgent
+        agent = ScannerAgent(
+            garak_runner=garak_runner,
+            pyrit_runner=pyrit_runner,
+            vector_poisoner=vector_poisoner,
+        )
+
+        # Phase: garak
+        if garak_runner is not None:
+            with _scan_lock:
+                _scan_state.update({"phase": "garak", "progress": 20})
+
+        # Phase: pyrit
+        if pyrit_runner is not None:
+            with _scan_lock:
+                _scan_state.update({"phase": "pyrit", "progress": 60})
+
+        # Phase: vector
+        if vector_poisoner is not None:
+            with _scan_lock:
+                _scan_state.update({"phase": "vector", "progress": 80})
+
+        with _scan_lock:
+            _scan_state.update({"phase": "running", "progress": 85})
+
+        findings = agent.scan(pyrit_max_turns=pyrit_max_turns)
+
+        with _scan_lock:
+            _scan_state.update({"phase": "saving", "progress": 98})
+
+        artifacts_dir = _ROOT / "artifacts"
+        artifacts_dir.mkdir(exist_ok=True)
+        agent.save_findings(findings, artifacts_dir / "findings.json")
+
+        # Count severities
+        sev_counts: dict[str, int] = {}
+        for f in findings:
+            sev = (f.severity or "LOW").upper()
+            sev_counts[sev] = sev_counts.get(sev, 0) + 1
+
+        with _scan_lock:
+            _scan_state.update({
+                "running": False,
+                "phase": "done",
+                "progress": 100,
+                "findings_count": len(findings),
+                "severity_counts": sev_counts,
+                "finished_at": time.time(),
+                "error": None,
+            })
+
+    except Exception as exc:
+        with _scan_lock:
+            _scan_state.update({
+                "running": False,
+                "phase": "error",
+                "progress": 0,
+                "error": str(exc),
+                "finished_at": time.time(),
+            })
+
+
+@app.post("/api/scan/start")
+def start_scan() -> dict[str, Any]:
+    """Start Agent 1 (Scanner) in a background thread."""
+    with _scan_lock:
+        if _scan_state["running"]:
+            raise HTTPException(status_code=409, detail="Scan already running")
+        _scan_state.update({
+            "running": True,
+            "phase": "initializing",
+            "progress": 0,
+            "findings_count": 0,
+            "severity_counts": {},
+            "started_at": time.time(),
+            "finished_at": None,
+            "error": None,
+        })
+
+    cfg = _read_config()
+    scanners: list[str] = cfg.get("scanners", ["garak", "pyrit", "vector"])
+    pyrit_max_turns: int = int(cfg.get("pyrit_max_turns", 5))
+
+    t = threading.Thread(target=_run_scan_thread, args=(scanners, pyrit_max_turns), daemon=True)
+    t.start()
+    return {"status": "started"}
+
+
+@app.get("/api/scan/status")
+def get_scan_status() -> dict[str, Any]:
+    """Return current scan state."""
+    with _scan_lock:
+        return dict(_scan_state)
+
+
+@app.post("/api/scan/reset")
+def reset_scan() -> dict[str, Any]:
+    """Reset scan state to idle so a new scan can start."""
+    with _scan_lock:
+        if _scan_state["running"]:
+            raise HTTPException(status_code=409, detail="Cannot reset while scan is running")
+        _scan_state.update({
+            "running": False,
+            "phase": "idle",
+            "progress": 0,
+            "findings_count": 0,
+            "severity_counts": {},
+            "started_at": None,
+            "finished_at": None,
+            "error": None,
+        })
+    return {"status": "reset"}
 
 
 # ---------------------------------------------------------------------------
