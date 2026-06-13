@@ -392,22 +392,26 @@ def _read_config() -> dict[str, Any]:
 
 
 def _write_env_key(key_name: str, value: str) -> None:
-    """Append or update KEY=value in .env file."""
+    """Append or update KEY=value in .env file. Empty value removes the key."""
     env_key = key_name.upper()
     lines: list[str] = []
     if _ENV_FILE.exists():
         lines = _ENV_FILE.read_text(encoding="utf-8").splitlines()
-    # Replace existing line or append
-    found = False
-    for i, line in enumerate(lines):
-        if line.startswith(f"{env_key}="):
-            lines[i] = f"{env_key}={value}"
-            found = True
-            break
-    if not found:
-        lines.append(f"{env_key}={value}")
+    if value == "":
+        # Delete the key
+        lines = [l for l in lines if not l.startswith(f"{env_key}=")]
+        os.environ.pop(env_key, None)
+    else:
+        found = False
+        for i, line in enumerate(lines):
+            if line.startswith(f"{env_key}="):
+                lines[i] = f"{env_key}={value}"
+                found = True
+                break
+        if not found:
+            lines.append(f"{env_key}={value}")
+        os.environ[env_key] = value
     _ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    os.environ[env_key] = value  # update current process too
 
 
 class ConfigPayload(BaseModel):
