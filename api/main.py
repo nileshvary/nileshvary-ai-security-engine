@@ -16,8 +16,11 @@ Run:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
+
+logger = logging.getLogger(__name__)
 import threading
 import time
 from pathlib import Path
@@ -28,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 app = FastAPI(title="RemediAX API Bridge", version="1.0.0")
@@ -486,12 +490,52 @@ _scan_state: dict[str, Any] = {
 _scan_lock = threading.Lock()
 
 
-def _run_scan_thread(scanners: list[str], pyrit_max_turns: int) -> None:
+class _GarakAdapter:
+    """Bridge between scanner_agent's run_scan(probes=...) and GarakRunner.run_scan(command).
+
+    scanner_agent.py calls self._garak.run_scan(probes=list) but GarakRunner.run_scan()
+    requires run_scan(command: list[str]).  This adapter translates the call so no
+    agent files need to be touched.
+    """
+
+    def __init__(self, runner: Any, target_url: str = "") -> None:
+        self._r = runner
+        self._url = target_url
+
+    def run_scan(self, probes: list[str] | None = None) -> list[Any]:  # type: ignore[override]
+        cmd = self._r.build_command(
+            target_type="rest.RestGenerator",
+            target_name="",
+            probes=probes,
+        )
+        if self._url:
+            cmd.extend(["--uri", self._url])
+        # Consume subprocess output (we don't need streaming here)
+        try:
+            list(self._r.run_scan(cmd))
+        except Exception as exc:
+            logger.warning("_GarakAdapter.run_scan subprocess error: %s", exc)
+            return []
+        report = self._r.get_latest_report()
+        return self._r.parse_report(report) if report else []
+
+
+def _run_scan_thread(scanners: list[str], pyrit_max_turns: int, target_url: str = "", api_key: str = "") -> None:
     """Background thread: runs ScannerAgent and updates _scan_state."""
     global _scan_state
     try:
         with _scan_lock:
             _scan_state.update({"phase": "initializing", "progress": 5, "error": None})
+
+        # Build HTTP target when a URL is configured
+        http_target = None
+        if target_url:
+            try:
+                from tools.http_target import HttpTarget
+                http_target = HttpTarget(url=target_url, api_key=api_key)
+                logger.info("HttpTarget created for %s", target_url)
+            except Exception as exc:
+                logger.warning("HttpTarget import failed: %s", exc)
 
         # Lazy imports — only import runners that are enabled
         garak_runner = None
@@ -501,14 +545,14 @@ def _run_scan_thread(scanners: list[str], pyrit_max_turns: int) -> None:
         if "garak" in scanners:
             try:
                 from tools.garak_runner import GarakRunner
-                garak_runner = GarakRunner()
+                garak_runner = _GarakAdapter(GarakRunner(), target_url=target_url)
             except Exception as e:
                 pass  # Garak unavailable — skip
 
         if "pyrit" in scanners:
             try:
                 from tools.pyrit_runner import PyRITRunner
-                pyrit_runner = PyRITRunner()
+                pyrit_runner = PyRITRunner(target=http_target)
             except Exception as e:
                 pass
 
@@ -559,6 +603,35 @@ def _run_scan_thread(scanners: list[str], pyrit_max_turns: int) -> None:
             sev = (f.severity or "LOW").upper()
             sev_counts[sev] = sev_counts.get(sev, 0) + 1
 
+        # Auto-generate report (Agent 3) so Reports tab is always current
+        with _scan_lock:
+            _scan_state.update({"phase": "reporting", "progress": 99})
+        try:
+            from agents.reporter_agent import ReporterAgent
+            from schemas.finding import Finding
+
+            # Load remediation results if available (Agent 2 output)
+            remediation_results: list = []
+            rem_path = artifacts_dir / "remediation_results.json"
+            if rem_path.exists():
+                try:
+                    from agents.remediator_agent import RemediatorAgent
+                    rem_raw = json.loads(rem_path.read_text(encoding="utf-8"))
+                    remediation_results = rem_raw
+                except Exception:
+                    remediation_results = []
+
+            reporter = ReporterAgent()
+            html = reporter.generate_report(
+                findings=findings,
+                results=remediation_results,
+                target=target_url or "LLM Target",
+            )
+            reporter.save_report(html, artifacts_dir / "summary.html")
+            logger.info("Report auto-generated at artifacts/summary.html")
+        except Exception as rep_exc:
+            logger.warning("Auto-report generation failed (non-fatal): %s", rep_exc)
+
         with _scan_lock:
             _scan_state.update({
                 "running": False,
@@ -601,8 +674,15 @@ def start_scan() -> dict[str, Any]:
     cfg = _read_config()
     scanners: list[str] = cfg.get("scanners", ["garak", "pyrit", "vector"])
     pyrit_max_turns: int = int(cfg.get("pyrit_max_turns", 5))
+    target_url: str = cfg.get("target_url", "")
+    api_key: str = (
+        os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("ANTHROPIC_API_KEY")
+        or os.environ.get("MISTRAL_API_KEY")
+        or ""
+    )
 
-    t = threading.Thread(target=_run_scan_thread, args=(scanners, pyrit_max_turns), daemon=True)
+    t = threading.Thread(target=_run_scan_thread, args=(scanners, pyrit_max_turns, target_url, api_key), daemon=True)
     t.start()
     return {"status": "started"}
 
@@ -631,6 +711,127 @@ def reset_scan() -> dict[str, Any]:
             "error": None,
         })
     return {"status": "reset"}
+
+
+# ---------------------------------------------------------------------------
+# Remediation results + guardrail apply
+# ---------------------------------------------------------------------------
+
+REMEDIATION_FILE = _ROOT / "artifacts" / "remediation_results.json"
+
+
+@app.get("/api/remediation_results")
+def get_remediation_results() -> list[dict[str, Any]]:
+    """Return all remediation results from artifacts/remediation_results.json."""
+    if not REMEDIATION_FILE.exists():
+        return []
+    return json.loads(REMEDIATION_FILE.read_text(encoding="utf-8"))
+
+
+class ApplyPayload(BaseModel):
+    indices: list[int]
+
+
+@app.post("/api/guardrails/apply")
+def apply_guardrails(payload: ApplyPayload) -> dict[str, Any]:
+    """Merge approved remediation patches into guardrails.yaml."""
+    import yaml  # already available via nemoguardrails dep
+
+    if not REMEDIATION_FILE.exists():
+        raise HTTPException(status_code=404, detail="remediation_results.json not found")
+
+    results: list[dict] = json.loads(REMEDIATION_FILE.read_text(encoding="utf-8"))
+
+    guardrails_path = _ROOT / "guardrails.yaml"
+    existing: dict = yaml.safe_load(guardrails_path.read_text(encoding="utf-8")) or {}
+    input_rules: list = existing.get("input_guardrails", [])
+    output_rules: list = existing.get("output_guardrails", [])
+
+    existing_ids: set[str] = {r.get("id", "") for r in input_rules + output_rules}
+    applied = 0
+
+    for idx in payload.indices:
+        if idx < 0 or idx >= len(results):
+            continue
+        result = results[idx]
+        gc = result.get("guardrail_config")
+        if not gc:
+            continue
+        for rule in gc.get("input_filters", []):
+            rule_id = rule.get("id", f"auto-input-{idx}")
+            if rule_id not in existing_ids:
+                input_rules.append(rule)
+                existing_ids.add(rule_id)
+                applied += 1
+        for rule in gc.get("output_filters", []):
+            rule_id = rule.get("id", f"auto-output-{idx}")
+            if rule_id not in existing_ids:
+                output_rules.append(rule)
+                existing_ids.add(rule_id)
+                applied += 1
+
+    existing["input_guardrails"] = input_rules
+    existing["output_guardrails"] = output_rules
+    guardrails_path.write_text(yaml.dump(existing, default_flow_style=False, allow_unicode=True), encoding="utf-8")
+
+    return {
+        "applied": applied,
+        "guardrails_total": len(input_rules) + len(output_rules),
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /api/report
+# ---------------------------------------------------------------------------
+
+@app.post("/api/report/generate")
+def generate_report() -> dict[str, Any]:
+    """Re-run Agent 3 (ReporterAgent) against current findings.json → summary.html."""
+    findings_path = _ROOT / "artifacts" / "findings.json"
+    if not findings_path.exists():
+        raise HTTPException(status_code=404, detail="findings.json not found — run a scan first")
+    try:
+        from schemas.finding import Finding
+        from agents.reporter_agent import ReporterAgent
+
+        findings_raw = json.loads(findings_path.read_text(encoding="utf-8"))
+        findings = [Finding.from_dict(f) for f in findings_raw]
+
+        # Load remediation results if available
+        results: list = []
+        rem_path = _ROOT / "artifacts" / "remediation_results.json"
+        if rem_path.exists():
+            try:
+                results = json.loads(rem_path.read_text(encoding="utf-8"))
+            except Exception:
+                results = []
+
+        cfg = _read_config()
+        target = cfg.get("target_url") or "LLM Target"
+
+        reporter = ReporterAgent()
+        html = reporter.generate_report(findings=findings, results=results, target=target)
+        out = _ROOT / "artifacts" / "summary.html"
+        reporter.save_report(html, out)
+        return {"status": "ok", "findings": len(findings), "size_bytes": len(html)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/report/exists")
+def get_report_exists() -> dict[str, Any]:
+    """Return whether artifacts/summary.html exists."""
+    p = _ROOT / "artifacts" / "summary.html"
+    return {"exists": p.exists(), "size_kb": round(p.stat().st_size / 1024, 1) if p.exists() else 0}
+
+
+@app.get("/api/report", response_class=HTMLResponse)
+def get_report() -> HTMLResponse:
+    """Serve artifacts/summary.html as HTML (Agent 3 output)."""
+    p = _ROOT / "artifacts" / "summary.html"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="summary.html not found — run Agent 3 first")
+    return HTMLResponse(content=p.read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------
