@@ -56,24 +56,44 @@ app.add_middleware(
 _ROOT = Path(__file__).parent.parent
 
 
-def _load_api_key_from_env() -> str:
-    """Read first non-empty API key value from .env, regardless of key name.
+def _load_api_key_from_env(target_url: str = "") -> str:
+    """Return the API key that matches the target provider URL.
 
-    The Config tab lets users enter any custom key name (e.g. 'MISTRAL API'
-    with a space), so we cannot rely on a fixed env var name. We just return
-    the first non-empty value found in the .env file. Falls back to standard
-    os.environ env var names if the file is absent or all values are empty.
+    Reads all key=value pairs from .env, then selects the one whose name
+    contains a keyword matching the provider inferred from target_url.
+    Falls back to the first non-empty .env value, then to standard os.environ
+    names. Handles any custom key name (e.g. 'MISTRAL API' with a space).
     """
+    env_vars: dict[str, str] = {}
     env_path = _ROOT / ".env"
     if env_path.exists():
         for line in env_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
-            _k, v = line.split("=", 1)
-            v = v.strip()
+            k, v = line.split("=", 1)
+            k, v = k.strip(), v.strip()
             if v:
-                return v
+                env_vars[k] = v
+
+    url_lower = target_url.lower()
+    for provider, keyword in [
+        ("mistral", "MISTRAL"),
+        ("anthropic", "ANTHROPIC"),
+        ("openai", "OPENAI"),
+        ("groq", "GROQ"),
+        ("ollama", "OLLAMA"),
+        ("gemini", "GOOGLE"),
+        ("cohere", "COHERE"),
+    ]:
+        if provider in url_lower:
+            for k, v in env_vars.items():
+                if keyword in k.upper():
+                    return v
+
+    if env_vars:
+        return next(iter(env_vars.values()))
+
     return (
         os.environ.get("MISTRAL_API_KEY")
         or os.environ.get("OPENAI_API_KEY")
@@ -596,23 +616,17 @@ def _run_scan_thread(scanners: list[str], pyrit_max_turns: int, target_url: str 
             vector_poisoner=vector_poisoner,
         )
 
-        # Phase: garak
-        if garak_runner is not None:
-            with _scan_lock:
-                _scan_state.update({"phase": "garak", "progress": 20})
-
-        # Phase: pyrit
-        if pyrit_runner is not None:
-            with _scan_lock:
-                _scan_state.update({"phase": "pyrit", "progress": 60})
-
-        # Phase: vector
-        if vector_poisoner is not None:
-            with _scan_lock:
-                _scan_state.update({"phase": "vector", "progress": 80})
-
+        # Build honest label showing which scanners are actually running
+        active_scanners = [
+            name for name, runner in [
+                ("garak", garak_runner),
+                ("pyrit", pyrit_runner),
+                ("vector", vector_poisoner),
+            ] if runner is not None
+        ]
+        scan_label = " + ".join(active_scanners) if active_scanners else "scanning"
         with _scan_lock:
-            _scan_state.update({"phase": "running", "progress": 85})
+            _scan_state.update({"phase": scan_label, "progress": 20})
 
         all_findings = agent.scan(pyrit_max_turns=pyrit_max_turns)
 
@@ -656,8 +670,7 @@ def _run_scan_thread(scanners: list[str], pyrit_max_turns: int, target_url: str 
             if rem_path.exists():
                 try:
                     from agents.remediator_agent import RemediatorAgent
-                    rem_raw = json.loads(rem_path.read_text(encoding="utf-8"))
-                    remediation_results = rem_raw
+                    remediation_results = RemediatorAgent.load_results(rem_path)
                 except Exception:
                     remediation_results = []
 
@@ -715,7 +728,7 @@ def start_scan() -> dict[str, Any]:
     scanners: list[str] = cfg.get("scanners", ["garak", "pyrit", "vector"])
     pyrit_max_turns: int = int(cfg.get("pyrit_max_turns", 5))
     target_url: str = cfg.get("target_url", "")
-    api_key: str = _load_api_key_from_env()
+    api_key: str = _load_api_key_from_env(target_url)
 
     t = threading.Thread(target=_run_scan_thread, args=(scanners, pyrit_max_turns, target_url, api_key), daemon=True)
     t.start()
@@ -778,7 +791,7 @@ def apply_guardrails(payload: ApplyPayload) -> dict[str, Any]:
     results: list[dict] = json.loads(REMEDIATION_FILE.read_text(encoding="utf-8"))
 
     guardrails_path = _ROOT / "guardrails.yaml"
-    existing: dict = yaml.safe_load(guardrails_path.read_text(encoding="utf-8")) or {}
+    existing: dict = _read_guardrails()
     input_rules: list = existing.get("input_guardrails", [])
     output_rules: list = existing.get("output_guardrails", [])
 
@@ -837,7 +850,8 @@ def generate_report() -> dict[str, Any]:
         rem_path = _ROOT / "artifacts" / "remediation_results.json"
         if rem_path.exists():
             try:
-                results = json.loads(rem_path.read_text(encoding="utf-8"))
+                from agents.remediator_agent import RemediatorAgent as _RA
+                results = _RA.load_results(rem_path)
             except Exception:
                 results = []
 

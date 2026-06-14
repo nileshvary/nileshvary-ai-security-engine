@@ -20,6 +20,23 @@ from schemas.finding import Finding
 
 logger = logging.getLogger(__name__)
 
+# Severity derived from OWASP LLM category + whether attack succeeded.
+# Unsuccessful attacks are always LOW — no confirmed impact.
+_PYRIT_SEVERITY_MAP: dict[str, str] = {
+    "LLM01": "CRITICAL",  # Prompt Injection
+    "LLM07": "CRITICAL",  # System Prompt Leakage
+    "LLM02": "HIGH",      # Sensitive Information Disclosure
+    "LLM04": "HIGH",      # Data and Model Poisoning
+    "LLM06": "HIGH",      # Excessive Agency
+    "LLM08": "HIGH",      # Vector and Embedding Weaknesses
+}
+
+
+def _pyrit_severity(owasp_code: str, is_successful: bool) -> str:
+    if not is_successful:
+        return "LOW"
+    return _PYRIT_SEVERITY_MAP.get(owasp_code, "MEDIUM")
+
 
 class ScannerAgent:
     """Coordinate Garak, PyRIT, and VectorPoisoner scanners and emit normalized Finding objects.
@@ -122,14 +139,7 @@ class ScannerAgent:
 
     def _run_garak(self, probes: list[str] | None) -> list[Finding]:
         """Run GarakRunner and convert results to Finding objects."""
-        try:
-            from src.integration_bridge.parser import GarakParser
-            from src.integration_bridge.models import Finding as BridgeFinding
-        except ImportError:
-            logger.warning("integration_bridge not importable — skipping Garak")
-            return []
-
-        raw_findings: list[BridgeFinding] = []
+        raw_findings: list[Any] = []
         try:
             # GarakRunner.run_scan() is a generator; consume it all
             run_gen = self._garak.run_scan(probes=probes)
@@ -212,7 +222,7 @@ class ScannerAgent:
             is_successful_attack=raw.get("is_successful_attack", False),
             owasp_llm_category=llm_code,
             owasp_agentic_categories=merged,
-            severity="MEDIUM",
+            severity=_pyrit_severity(llm_code, raw.get("is_successful_attack", False)),
             source="pyrit",
             raw_data=raw,
         )

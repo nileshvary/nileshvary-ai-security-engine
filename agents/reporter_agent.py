@@ -204,19 +204,17 @@ class ReporterAgent:
             if strat_key not in ("log_only",):
                 remediated_count += 1
 
-        result_by_probe: dict[str, Any] = {
-            getattr(r.finding, "probe_name", ""): r
-            for r in results
-            if hasattr(r, "finding")
-        }
-
         exec_summary = self._build_exec_summary(findings, target)
 
+        # Use positional zip — RemediatorAgent guarantees one result per finding
+        # in order. A probe-name dict would silently overwrite duplicate entries.
         finding_items = []
-        for idx, finding in enumerate(findings):
-            result = result_by_probe.get(getattr(finding, "probe_name", ""))
+        for finding, result in zip(findings, results):
             item = self._build_finding_item(finding, result)
             finding_items.append(item)
+        # Append any unmatched findings (if findings > results) with no result
+        for finding in findings[len(results):]:
+            finding_items.append(self._build_finding_item(finding, None))
 
         return {
             "target": target,
