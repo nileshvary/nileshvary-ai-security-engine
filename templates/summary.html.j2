@@ -288,5 +288,13 @@
   </div>
 
 </div>
+<script>
+  function _reportHeight() {
+    var h = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+    window.parent.postMessage({ remediax: 'height', value: h }, '*');
+  }
+  if (document.readyState === 'complete') { _reportHeight(); }
+  window.addEventListener('load', _reportHeight);
+</script>
 </body>
 </html>
