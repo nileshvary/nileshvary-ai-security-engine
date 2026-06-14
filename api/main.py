@@ -56,6 +56,32 @@ app.add_middleware(
 _ROOT = Path(__file__).parent.parent
 
 
+def _load_api_key_from_env() -> str:
+    """Read first non-empty API key value from .env, regardless of key name.
+
+    The Config tab lets users enter any custom key name (e.g. 'MISTRAL API'
+    with a space), so we cannot rely on a fixed env var name. We just return
+    the first non-empty value found in the .env file. Falls back to standard
+    os.environ env var names if the file is absent or all values are empty.
+    """
+    env_path = _ROOT / ".env"
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            _k, v = line.split("=", 1)
+            v = v.strip()
+            if v:
+                return v
+    return (
+        os.environ.get("MISTRAL_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("ANTHROPIC_API_KEY")
+        or ""
+    )
+
+
 def _read_findings() -> list[dict[str, Any]]:
     p = _ROOT / "artifacts" / "findings.json"
     if not p.exists():
@@ -588,7 +614,21 @@ def _run_scan_thread(scanners: list[str], pyrit_max_turns: int, target_url: str 
         with _scan_lock:
             _scan_state.update({"phase": "running", "progress": 85})
 
-        findings = agent.scan(pyrit_max_turns=pyrit_max_turns)
+        all_findings = agent.scan(pyrit_max_turns=pyrit_max_turns)
+
+        # Only keep findings where the attack actually succeeded — prevents
+        # false positives when a model correctly refuses attack probes.
+        findings = [f for f in all_findings if f.is_successful_attack]
+        logger.info(
+            "Scan complete: %d probes run, %d confirmed vulnerabilities",
+            len(all_findings), len(findings),
+        )
+        if not findings and all_findings:
+            logger.warning(
+                "0 confirmed vulnerabilities — model rejected all %d probes. "
+                "If this is unexpected, check API key in pm2 logs above.",
+                len(all_findings),
+            )
 
         with _scan_lock:
             _scan_state.update({"phase": "saving", "progress": 98})
@@ -675,12 +715,7 @@ def start_scan() -> dict[str, Any]:
     scanners: list[str] = cfg.get("scanners", ["garak", "pyrit", "vector"])
     pyrit_max_turns: int = int(cfg.get("pyrit_max_turns", 5))
     target_url: str = cfg.get("target_url", "")
-    api_key: str = (
-        os.environ.get("OPENAI_API_KEY")
-        or os.environ.get("ANTHROPIC_API_KEY")
-        or os.environ.get("MISTRAL_API_KEY")
-        or ""
-    )
+    api_key: str = _load_api_key_from_env()
 
     t = threading.Thread(target=_run_scan_thread, args=(scanners, pyrit_max_turns, target_url, api_key), daemon=True)
     t.start()
